@@ -93,7 +93,11 @@ def _run(args: argparse.Namespace) -> None:
         config.log_level = "DEBUG"
 
     orchestrator = Orchestrator(config)
-    asyncio.run(orchestrator.run())
+    try:
+        asyncio.run(orchestrator.run())
+    except KeyboardInterrupt:
+        # Signal handler already cleaned up — just exit cleanly
+        pass
 
 
 def _parse_spec(args: argparse.Namespace) -> None:

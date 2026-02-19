@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import signal
 import subprocess
 import time
 from typing import TYPE_CHECKING
@@ -16,6 +18,8 @@ from claude_agent_sdk import (
     ResultMessage,
     SystemMessage,
     TextBlock,
+    ToolUseBlock,
+    ToolResultBlock,
 )
 
 from .hooks import OrchestratorHooks
@@ -29,14 +33,36 @@ if TYPE_CHECKING:
 logger = logging.getLogger("orchestrator")
 
 
+def _get_sdk_subprocess_pid(client: ClaudeSDKClient) -> int | None:
+    """Extract the PID of the Claude Code subprocess from the SDK client.
+
+    Navigates: client._transport._process.pid
+    Returns None if any attribute is missing (SDK internals changed).
+    """
+    try:
+        transport = getattr(client, "_transport", None)
+        if transport is None:
+            return None
+        proc = getattr(transport, "_process", None)
+        if proc is None:
+            return None
+        return getattr(proc, "pid", None)
+    except Exception:
+        return None
+
+
 class FeatureRunner:
     """Executes a single feature using the Claude Agent SDK."""
+
+    # Class-level tracking of the active client for signal-based cleanup
+    _active_client: ClaudeSDKClient | None = None
+    _active_client_pid: int | None = None
 
     def __init__(self, config: OrchestratorConfig):
         self.config = config
 
     async def run_feature(self, feature: Feature) -> FeatureResult:
-        """Execute a feature with stall detection."""
+        """Execute a feature with stall detection and progress streaming."""
         start_time = time.monotonic()
 
         # Initialize hooks and human input handler
@@ -83,10 +109,17 @@ class FeatureRunner:
         cost_usd: float | None = None
         is_error = False
         error_msg: str | None = None
+        tool_count = 0
 
         try:
             async with ClaudeSDKClient(options) as client:
+                FeatureRunner._active_client = client
+
                 await client.query(prompt)
+
+                # Capture subprocess PID for cleanup on Ctrl-C.
+                # Must be after query() — that's when the subprocess spawns.
+                FeatureRunner._active_client_pid = _get_sdk_subprocess_pid(client)
 
                 # Launch stall detector in background
                 stall_task = asyncio.create_task(
@@ -99,12 +132,16 @@ class FeatureRunner:
                         if isinstance(message, SystemMessage):
                             if message.subtype == "init":
                                 session_id = message.data.get("session_id")
+                                logger.info(f"  Session started (id: {session_id})")
 
-                        # Log assistant text
+                        # Stream progress from assistant messages
                         if isinstance(message, AssistantMessage):
                             for block in message.content:
                                 if isinstance(block, TextBlock):
-                                    logger.debug(f"Claude: {block.text[:200]}")
+                                    self._log_assistant_text(block.text)
+                                elif isinstance(block, ToolUseBlock):
+                                    tool_count += 1
+                                    self._log_tool_use(block, tool_count)
 
                         # Capture final result
                         if isinstance(message, ResultMessage):
@@ -120,8 +157,12 @@ class FeatureRunner:
                         await stall_task
                     except asyncio.CancelledError:
                         pass
+                    FeatureRunner._active_client = None
+                    FeatureRunner._active_client_pid = None
 
         except Exception as e:
+            FeatureRunner._active_client = None
+            FeatureRunner._active_client_pid = None
             is_error = True
             error_msg = f"{type(e).__name__}: {str(e)}"
             logger.error(f"Feature #{feature.id} crashed: {error_msg}")
@@ -142,6 +183,81 @@ class FeatureRunner:
             duration_seconds=duration,
             cost_usd=cost_usd,
         )
+
+    # --- Progress streaming helpers ---
+
+    @staticmethod
+    def _log_assistant_text(text: str) -> None:
+        """Log assistant text, showing the first meaningful line as progress."""
+        # Show the first non-empty line, trimmed to 120 chars
+        for line in text.split("\n"):
+            line = line.strip()
+            if line:
+                if len(line) > 120:
+                    line = line[:117] + "..."
+                logger.info(f"  Claude: {line}")
+                # Only log additional lines at debug to avoid flooding
+                break
+        logger.debug(f"  [full text] {text[:500]}")
+
+    @staticmethod
+    def _log_tool_use(block: ToolUseBlock, count: int) -> None:
+        """Log tool use with a concise summary."""
+        name = block.name
+        inp = block.input
+        detail = ""
+        if name == "Read":
+            detail = f" {inp.get('file_path', '')}"
+        elif name == "Edit":
+            path = inp.get("file_path", "")
+            detail = f" {path}"
+        elif name == "Write":
+            detail = f" {inp.get('file_path', '')}"
+        elif name == "Bash":
+            cmd = inp.get("command", "")
+            if len(cmd) > 80:
+                cmd = cmd[:77] + "..."
+            detail = f" $ {cmd}"
+        elif name == "Glob":
+            detail = f" {inp.get('pattern', '')}"
+        elif name == "Grep":
+            detail = f" /{inp.get('pattern', '')}/"
+        elif name.startswith("mcp__playwright"):
+            short = name.replace("mcp__playwright__", "pw:")
+            detail = f" ({short})"
+            name = "Playwright"
+        elif name == "Task":
+            detail = f" [{inp.get('subagent_type', '')}]"
+
+        logger.info(f"  [{count:3d}] {name}{detail}")
+
+    @classmethod
+    def kill_active_subprocess(cls) -> None:
+        """Kill the active Claude Code subprocess, if any.
+
+        Called during signal handling to prevent orphaned processes.
+        Uses SIGTERM first, then SIGKILL after a brief wait.
+        Also kills the entire process group to catch child processes
+        (e.g., dev servers spawned by the worker).
+        """
+        pid = cls._active_client_pid
+        cls._active_client = None
+        cls._active_client_pid = None
+
+        if pid is None:
+            return
+
+        logger.info(f"  Terminating Claude Code subprocess (PID {pid})...")
+        try:
+            # Kill the process group (catches child processes like dev servers)
+            pgid = os.getpgid(pid)
+            os.killpg(pgid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            # Process already gone, or not a group leader — try direct kill
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
 
     async def _stall_detector(
         self,

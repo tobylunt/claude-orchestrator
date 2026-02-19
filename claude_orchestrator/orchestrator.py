@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import signal
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -26,9 +27,16 @@ class Orchestrator:
             progress_path=config.project_dir / config.progress_file,
         )
         self.runner = FeatureRunner(config)
+        self._shutdown_requested = False
 
     async def run(self) -> None:
-        """Main execution loop."""
+        """Main execution loop with graceful shutdown on Ctrl-C."""
+
+        # Install signal handlers for graceful shutdown
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, self._handle_shutdown_signal, sig)
+
         self.logger.info("=" * 60)
         self.logger.info("Claude Code Orchestrator starting")
         self.logger.info(f"Project: {self.config.project_dir}")
@@ -46,94 +54,118 @@ class Orchestrator:
         consecutive_failures = 0
         max_consecutive_failures = 3
 
-        while True:
-            # Find next feature
-            feature = self.state.get_next_feature(self.config.start_from_feature)
-            if feature is None:
-                self.logger.info("All features complete!")
-                break
-
-            if (
-                self.config.stop_after_feature is not None
-                and feature.id > self.config.stop_after_feature
-            ):
-                self.logger.info(
-                    f"Reached stop-after limit (feature #{self.config.stop_after_feature})"
-                )
-                break
-
-            # Check retry budget
-            if feature.attempts >= self.config.max_retries:
-                self.logger.error(
-                    f"Feature #{feature.id} has exhausted {self.config.max_retries} retries. "
-                    f"Last error: {feature.last_error}"
-                )
-                action = await self._ask_retry_exhausted(feature)
-                if action == "skip":
-                    feature.status = FeatureStatus.SKIPPED
-                    self.state.save_features()
-                    continue
-                elif action == "retry":
-                    feature.attempts = 0
-                    self.state.save_features()
-                    # Fall through to execution
-                else:  # abort
-                    self.logger.info("User chose to abort orchestration")
+        try:
+            while not self._shutdown_requested:
+                # Find next feature
+                feature = self.state.get_next_feature(self.config.start_from_feature)
+                if feature is None:
+                    self.logger.info("All features complete!")
                     break
 
-            # Display progress
-            self._print_feature_header(feature, features)
-
-            # Execute with retry
-            result = await self._execute_with_retry(feature)
-
-            # Record result
-            self.state.mark_feature(feature.id, result)
-
-            # Log progress
-            self.state.append_progress(ProgressEntry(
-                timestamp=datetime.now(),
-                feature_id=feature.id,
-                feature_name=feature.name,
-                status=FeatureStatus.PASSED if result.success else FeatureStatus.FAILED,
-                summary=(
-                    f"Completed successfully in {result.duration_seconds:.0f}s"
-                    if result.success
-                    else f"Failed after {result.retries_used} retries: {result.error}"
-                ),
-                commit_hash=result.commit_hash,
-                session_id=result.session_id,
-                error=result.error,
-            ))
-
-            if result.success:
-                consecutive_failures = 0
-                cost_str = f"${result.cost_usd:.2f}" if result.cost_usd else "n/a"
-                self.logger.info(
-                    f"Feature #{feature.id} PASSED "
-                    f"({result.duration_seconds:.0f}s, cost: {cost_str})"
-                )
-                # Brief pause between features for Ctrl+C opportunity
-                await asyncio.sleep(2)
-            else:
-                consecutive_failures += 1
-                self.logger.error(f"Feature #{feature.id} FAILED: {result.error}")
-                if consecutive_failures >= max_consecutive_failures:
-                    self.logger.error(
-                        f"{max_consecutive_failures} consecutive failures. "
-                        f"Pausing for human review."
+                if (
+                    self.config.stop_after_feature is not None
+                    and feature.id > self.config.stop_after_feature
+                ):
+                    self.logger.info(
+                        f"Reached stop-after limit (feature #{self.config.stop_after_feature})"
                     )
-                    action = await self._ask_consecutive_failures(feature)
-                    if action == "continue":
-                        consecutive_failures = 0
-                    else:
+                    break
+
+                # Check retry budget
+                if feature.attempts >= self.config.max_retries:
+                    self.logger.error(
+                        f"Feature #{feature.id} has exhausted {self.config.max_retries} retries. "
+                        f"Last error: {feature.last_error}"
+                    )
+                    action = await self._ask_retry_exhausted(feature)
+                    if action == "skip":
+                        feature.status = FeatureStatus.SKIPPED
+                        self.state.save_features()
+                        continue
+                    elif action == "retry":
+                        feature.attempts = 0
+                        self.state.save_features()
+                        # Fall through to execution
+                    else:  # abort
+                        self.logger.info("User chose to abort orchestration")
                         break
+
+                # Display progress
+                self._print_feature_header(feature, features)
+
+                # Execute with retry
+                result = await self._execute_with_retry(feature)
+
+                # Record result
+                self.state.mark_feature(feature.id, result)
+
+                # Log progress
+                self.state.append_progress(ProgressEntry(
+                    timestamp=datetime.now(),
+                    feature_id=feature.id,
+                    feature_name=feature.name,
+                    status=FeatureStatus.PASSED if result.success else FeatureStatus.FAILED,
+                    summary=(
+                        f"Completed successfully in {result.duration_seconds:.0f}s"
+                        if result.success
+                        else f"Failed after {result.retries_used} retries: {result.error}"
+                    ),
+                    commit_hash=result.commit_hash,
+                    session_id=result.session_id,
+                    error=result.error,
+                ))
+
+                if result.success:
+                    consecutive_failures = 0
+                    cost_str = f"${result.cost_usd:.2f}" if result.cost_usd else "n/a"
+                    self.logger.info(
+                        f"Feature #{feature.id} PASSED "
+                        f"({result.duration_seconds:.0f}s, cost: {cost_str})"
+                    )
+                    # Brief pause between features for Ctrl+C opportunity
+                    await asyncio.sleep(2)
+                else:
+                    consecutive_failures += 1
+                    self.logger.error(f"Feature #{feature.id} FAILED: {result.error}")
+                    if consecutive_failures >= max_consecutive_failures:
+                        self.logger.error(
+                            f"{max_consecutive_failures} consecutive failures. "
+                            f"Pausing for human review."
+                        )
+                        action = await self._ask_consecutive_failures(feature)
+                        if action == "continue":
+                            consecutive_failures = 0
+                        else:
+                            break
+
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            self.logger.info("Interrupted by user")
+        finally:
+            self._cleanup()
 
         # Final summary
         self.logger.info("=" * 60)
         self.logger.info("Orchestration complete")
         self.logger.info(self.state.get_progress_summary())
         self.logger.info("=" * 60)
+
+    def _handle_shutdown_signal(self, sig: signal.Signals) -> None:
+        """Handle SIGINT/SIGTERM: kill child processes and request shutdown."""
+        sig_name = sig.name
+        if self._shutdown_requested:
+            # Second signal — force exit immediately
+            self.logger.warning(f"Second {sig_name} received — force exiting")
+            FeatureRunner.kill_active_subprocess()
+            raise SystemExit(1)
+
+        self._shutdown_requested = True
+        self.logger.info(f"\n{sig_name} received — shutting down gracefully...")
+        self.logger.info("  (press Ctrl-C again to force-quit)")
+        FeatureRunner.kill_active_subprocess()
+
+    def _cleanup(self) -> None:
+        """Final cleanup: kill any lingering subprocesses."""
+        FeatureRunner.kill_active_subprocess()
 
     async def _execute_with_retry(self, feature: Feature) -> FeatureResult:
         """Execute a feature with exponential backoff retry."""

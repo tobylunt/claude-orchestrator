@@ -91,7 +91,7 @@ class OrchestratorHooks:
             "tool": tool_name,
             "time": self._last_tool_time,
         })
-        logger.debug(f"Tool #{self._tool_count}: {tool_name}")
+        logger.debug(f"  Hook: tool #{self._tool_count}: {tool_name}")
         return {}
 
     # --- Post-tool logging ---
