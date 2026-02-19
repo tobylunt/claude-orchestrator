@@ -1,0 +1,28 @@
+[project]
+name = "claude-orchestrator"
+version = "0.1.0"
+description = "Automated feature orchestrator using the Claude Agent SDK"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = [
+    "claude-agent-sdk>=0.1.0",
+    "pydantic>=2.0",
+    "tomli>=2.0;python_version<'3.11'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+]
+
+[project.scripts]
+orchestrate = "claude_orchestrator.cli:cli_entry"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
