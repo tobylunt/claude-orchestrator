@@ -8,13 +8,12 @@ from claude_orchestrator.hooks import check_command_safety
 class TestBlockedCommands:
     """Commands that MUST be blocked."""
 
-    # --- Filesystem destruction ---
+    # --- Recursive rm: non-allowlisted targets ---
 
     def test_rm_rf_root(self):
         assert check_command_safety("rm -rf /") is not None
 
     def test_rm_rf_root_with_path(self):
-        # "rm -rf /" should block, even with trailing space
         assert check_command_safety("rm -rf / ") is not None
 
     def test_rm_rf_home(self):
@@ -35,6 +34,38 @@ class TestBlockedCommands:
     def test_rm_fr_root(self):
         """rm -fr is the same as rm -rf."""
         assert check_command_safety("rm -fr /") is not None
+
+    def test_rm_rf_src(self):
+        """src/ is not in allowlist — blocks."""
+        assert check_command_safety("rm -rf src") is not None
+
+    def test_rm_rf_arbitrary_dir(self):
+        """Random directories are not in allowlist."""
+        assert check_command_safety("rm -rf my-important-data") is not None
+
+    def test_rm_rf_absolute_path(self):
+        assert check_command_safety("rm -rf /usr/local/bin") is not None
+
+    def test_rm_rf_home_subdir(self):
+        assert check_command_safety("rm -rf ~/Documents") is not None
+
+    def test_rm_r_without_f(self):
+        """rm -r (without -f) is still recursive and blocked."""
+        assert check_command_safety("rm -r some-directory") is not None
+
+    def test_rm_rf_dotgit(self):
+        """.git is not in allowlist."""
+        assert check_command_safety("rm -rf .git") is not None
+
+    def test_rm_rf_mixed_allowed_and_blocked(self):
+        """If ANY target is not in allowlist, block the whole command."""
+        assert check_command_safety("rm -rf node_modules src") is not None
+
+    def test_rm_rf_public(self):
+        assert check_command_safety("rm -rf public") is not None
+
+    def test_rm_rf_dotenv(self):
+        assert check_command_safety("rm -rf .env") is not None
 
     # --- Git remote operations ---
 
@@ -181,7 +212,7 @@ class TestAllowedCommands:
     def test_git_stash_pop(self):
         assert check_command_safety("git stash pop") is None
 
-    # --- Targeted rm (safe) ---
+    # --- Allowlisted recursive rm ---
 
     def test_rm_rf_node_modules(self):
         assert check_command_safety("rm -rf node_modules") is None
@@ -195,8 +226,39 @@ class TestAllowedCommands:
     def test_rm_rf_cache(self):
         assert check_command_safety("rm -rf .cache") is None
 
+    def test_rm_rf_build(self):
+        assert check_command_safety("rm -rf build") is None
+
+    def test_rm_rf_dotastro(self):
+        assert check_command_safety("rm -rf .astro") is None
+
+    def test_rm_rf_dotnext(self):
+        assert check_command_safety("rm -rf .next") is None
+
+    def test_rm_rf_coverage(self):
+        assert check_command_safety("rm -rf coverage") is None
+
+    def test_rm_rf_pycache(self):
+        assert check_command_safety("rm -rf __pycache__") is None
+
+    def test_rm_rf_pytest_cache(self):
+        assert check_command_safety("rm -rf .pytest_cache") is None
+
+    def test_rm_rf_multiple_allowed(self):
+        """Multiple allowlisted targets in one command."""
+        assert check_command_safety("rm -rf node_modules dist .cache") is None
+
+    def test_rm_rf_nested_allowed(self):
+        """Allowlisted basename inside a path."""
+        assert check_command_safety("rm -rf ./packages/foo/node_modules") is None
+
+    # --- Non-recursive rm (always allowed) ---
+
     def test_rm_single_file(self):
         assert check_command_safety("rm src/old-file.ts") is None
+
+    def test_rm_f_single_file(self):
+        assert check_command_safety("rm -f temp.log") is None
 
     # --- Other normal operations ---
 

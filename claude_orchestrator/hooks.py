@@ -12,10 +12,11 @@ logger = logging.getLogger("orchestrator")
 # ---------------------------------------------------------------------------
 # Bash command security rules
 #
-# Two tiers:
-#   BLOCKED_SUBSTRINGS — simple "in" check, fast and readable
-#   BLOCKED_PATTERNS   — regex for cases where substring matching is too
-#                        broad or too narrow
+# Three layers:
+#   1. BLOCKED_SUBSTRINGS — fast "in" check for obvious patterns
+#   2. BLOCKED_PATTERNS   — regex for nuanced matching
+#   3. _check_rm_recursive — allowlist-based: blocks ALL recursive rm
+#      except a small set of known-safe build artifact directories
 #
 # Organized by threat category. Each entry is (pattern, reason).
 # ---------------------------------------------------------------------------
@@ -60,25 +61,6 @@ BLOCKED_SUBSTRINGS: list[tuple[str, str]] = [
 ]
 
 BLOCKED_PATTERNS: list[tuple[re.Pattern[str], str]] = [
-    # --- Destructive rm: block rm -rf targeting broad paths ---
-    # Blocks: rm -rf /, rm -rf ~, rm -rf ~/, rm -rf ., rm -rf .., rm -rf $HOME
-    # Allows: rm -rf node_modules, rm -rf dist/, rm -rf ./dist, rm -rf .cache
-    (
-        re.compile(
-            r"\brm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+)*(-[a-zA-Z]*f[a-zA-Z]*\s+)*"
-            r"(/\s*$|/\s+|~/?(\s|$)|\.\.\s*$|\.\.\s+|\.\s*$|\.\s+|\$HOME\b)"
-        ),
-        "recursive delete targeting root, home, or current directory",
-    ),
-    # Also catch the -fr variant
-    (
-        re.compile(
-            r"\brm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)*(-[a-zA-Z]*r[a-zA-Z]*\s+)*"
-            r"(/\s*$|/\s+|~/?(\s|$)|\.\.\s*$|\.\.\s+|\.\s*$|\.\s+|\$HOME\b)"
-        ),
-        "recursive delete targeting root, home, or current directory",
-    ),
-
     # --- Arbitrary code execution from internet ---
     (
         re.compile(r"\bcurl\b.*\|\s*(sh|bash|zsh|python|node)\b"),
@@ -122,6 +104,92 @@ BLOCKED_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     ),
 ]
 
+# ---------------------------------------------------------------------------
+# Recursive rm: allowlist approach
+#
+# ALL `rm -r` / `rm -rf` / `rm -fr` etc. are blocked by default.
+# Only the specific directory basenames below are permitted.
+# Add entries here as needed for your project's build artifacts.
+# ---------------------------------------------------------------------------
+
+# Detects rm with a recursive flag: -r, -rf, -fr, -Rf, etc.
+_RM_RECURSIVE_RE = re.compile(r"\brm\s+.*-[a-zA-Z]*[rR]")
+
+# Basenames (not paths) that are safe to recursively delete.
+# Matched against each argument after the flags.
+RM_RECURSIVE_ALLOWLIST: set[str] = {
+    # JS/Node build artifacts
+    "node_modules",
+    "dist",
+    "build",
+    ".cache",
+    ".astro",
+    ".next",
+    ".nuxt",
+    ".turbo",
+    ".parcel-cache",
+    ".output",
+    ".vercel",
+    # Test / coverage
+    "coverage",
+    ".nyc_output",
+    # Python
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    "*.egg-info",
+    # Misc
+    "tmp",
+    ".tmp",
+}
+
+
+def _check_rm_recursive(command: str) -> str | None:
+    """Block all recursive rm unless every target is in the allowlist.
+
+    Parses the arguments after `rm` and its flags, strips leading `./`
+    and trailing `/`, then checks each basename against RM_RECURSIVE_ALLOWLIST.
+    """
+    if not _RM_RECURSIVE_RE.search(command):
+        return None
+
+    # Extract everything after "rm" and its flags
+    # Split the command into tokens (simple split, not shell-aware)
+    tokens = command.split()
+    try:
+        rm_idx = tokens.index("rm")
+    except ValueError:
+        # rm might be at a different position in a pipe chain;
+        # conservative: block it
+        return "recursive rm (could not parse targets)"
+
+    # Collect targets: everything after rm that isn't a flag
+    targets: list[str] = []
+    for token in tokens[rm_idx + 1:]:
+        if token.startswith("-"):
+            continue
+        # Normalize: strip leading "./" prefix and trailing "/"
+        cleaned = token
+        while cleaned.startswith("./"):
+            cleaned = cleaned[2:]
+        cleaned = cleaned.rstrip("/")
+        if not cleaned or cleaned in (".", ".."):
+            # Bare ".", "..", "/" — definitely block
+            return "recursive rm targeting root or current directory"
+        targets.append(cleaned)
+
+    if not targets:
+        return "recursive rm with no identifiable target"
+
+    for target in targets:
+        # Extract the basename (last path component)
+        basename = target.rsplit("/", 1)[-1]
+        if basename not in RM_RECURSIVE_ALLOWLIST:
+            return f"recursive rm — '{target}' not in allowlist"
+
+    return None
+
 
 def check_command_safety(command: str) -> str | None:
     """Check a Bash command against security rules.
@@ -135,6 +203,11 @@ def check_command_safety(command: str) -> str | None:
     for regex, reason in BLOCKED_PATTERNS:
         if regex.search(command):
             return reason
+
+    # Allowlist-based recursive rm check (runs last since it's more expensive)
+    rm_reason = _check_rm_recursive(command)
+    if rm_reason:
+        return rm_reason
 
     return None
 
