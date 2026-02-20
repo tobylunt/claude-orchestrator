@@ -46,6 +46,7 @@ class OrchestratorConfig(BaseModel):
         "WebFetch", "WebSearch", "AskUserQuestion", "Task",
     ])
     disallowed_tools: list[str] = Field(default_factory=list)
+    prompt_unknown_tools: bool = False  # If True, prompt for approval on unrecognized tools
 
     # MCP servers
     mcp_servers: dict[str, dict[str, Any]] = Field(default_factory=dict)

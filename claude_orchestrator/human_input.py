@@ -16,19 +16,31 @@ logger = logging.getLogger("orchestrator")
 
 
 class HumanInputHandler:
-    """Handles AskUserQuestion and tool approval with timeout escalation."""
+    """Handles AskUserQuestion and tool approval with timeout escalation.
+
+    By default, auto-approves all standard Claude Code tools and MCP tools.
+    The security_hook in hooks.py handles blocking dangerous commands.
+    Only truly unknown tools or explicitly denied tools require human approval.
+    """
+
+    # Tools that are always safe to auto-approve
+    STANDARD_TOOLS = {
+        "Read", "Glob", "Grep", "WebSearch", "WebFetch",
+        "Write", "Edit", "Bash", "Task", "TodoWrite", "TodoRead",
+        "NotebookEdit", "Skill",
+    }
 
     def __init__(
         self,
         input_timeout: float = 120.0,
         auto_approve_tools: set[str] | None = None,
         auto_deny_tools: set[str] | None = None,
+        prompt_unknown_tools: bool = False,
     ):
         self.input_timeout = input_timeout
-        self.auto_approve_tools = auto_approve_tools or {
-            "Read", "Glob", "Grep", "WebSearch", "WebFetch",
-        }
+        self.auto_approve_tools = auto_approve_tools or self.STANDARD_TOOLS
         self.auto_deny_tools = auto_deny_tools or set()
+        self.prompt_unknown_tools = prompt_unknown_tools
 
     async def can_use_tool(
         self,
@@ -36,17 +48,34 @@ class HumanInputHandler:
         input_data: dict[str, Any],
         context: ToolPermissionContext,
     ) -> PermissionResultAllow | PermissionResultDeny:
-        """Main callback for the SDK's can_use_tool parameter."""
+        """Main callback for the SDK's can_use_tool parameter.
+
+        Auto-approves:
+        - AskUserQuestion (routed to terminal UI)
+        - All standard Claude Code tools (security handled by hooks)
+        - All MCP tools (prefixed with "mcp__")
+
+        Only prompts for unknown tools if prompt_unknown_tools is True.
+        """
         if tool_name == "AskUserQuestion":
             return await self._handle_ask_user_question(input_data)
-
-        if tool_name in self.auto_approve_tools:
-            return PermissionResultAllow(updated_input=input_data)
 
         if tool_name in self.auto_deny_tools:
             return PermissionResultDeny(
                 message=f"Tool {tool_name} is not permitted by orchestrator policy"
             )
+
+        if tool_name in self.auto_approve_tools:
+            return PermissionResultAllow(updated_input=input_data)
+
+        # MCP tools (e.g. mcp__playwright__browser_navigate) — auto-approve
+        if tool_name.startswith("mcp__"):
+            return PermissionResultAllow(updated_input=input_data)
+
+        # Unknown tool — either auto-approve or prompt based on config
+        if not self.prompt_unknown_tools:
+            logger.debug(f"Auto-approving unknown tool: {tool_name}")
+            return PermissionResultAllow(updated_input=input_data)
 
         return await self._prompt_tool_approval(tool_name, input_data)
 

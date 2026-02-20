@@ -69,6 +69,7 @@ class FeatureRunner:
         hooks = OrchestratorHooks(stall_timeout=self.config.stall_timeout_seconds)
         human_handler = HumanInputHandler(
             input_timeout=self.config.human_input_timeout_seconds,
+            prompt_unknown_tools=self.config.prompt_unknown_tools,
         )
 
         # Build the prompt
