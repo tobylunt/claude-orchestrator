@@ -115,3 +115,27 @@ def test_finding_is_sarif_compatible_subset():
         status="open",
     )
     assert f.severity == "medium"
+
+
+def test_strenum_str_returns_value():
+    """Regression: StrEnum members must str() to their value, not the
+    'ClassName.MEMBER' default. This guards JSON serialization on 3.10."""
+    assert str(TaskType.LIBRARY) == "library"
+    assert str(FeatureStatus.PENDING) == "pending"
+
+
+def test_feature_model_dump_emits_strings_for_enums():
+    """Regression: model_dump() must return strings for enum fields, not enum members.
+    Without use_enum_values=True this would return the FeatureStatus member, breaking
+    json.dumps() in state_io.py."""
+    import json
+    plan = VerificationPlan(verifier_id="python_pytest", success_criteria=[], required_tools=[])
+    feat = Feature(
+        id=1, name="x", description="y", task_type=TaskType.LIBRARY,
+        verification_plan=plan, status=FeatureStatus.PENDING,
+    )
+    dumped = feat.model_dump()
+    assert dumped["status"] == "pending"
+    assert dumped["task_type"] == "library"
+    # And it must json-serialize cleanly:
+    assert json.loads(json.dumps(dumped, default=str))["status"] == "pending"

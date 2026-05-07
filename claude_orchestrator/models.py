@@ -10,11 +10,20 @@ if sys.version_info >= (3, 11):
     from enum import StrEnum
 else:
     class StrEnum(str, Enum):  # type: ignore[no-redef]
-        """Backport of StrEnum for Python < 3.11."""
+        """Backport of StrEnum for Python < 3.11.
+
+        Important: overriding __str__ to return self.value matches stdlib
+        StrEnum behavior. Without this, str(member) returns the default
+        Enum repr (e.g. 'FeatureStatus.PENDING') instead of the value
+        ('pending'), which silently corrupts JSON serialization on 3.10.
+        """
+
+        def __str__(self) -> str:
+            return self.value
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +130,8 @@ class InputRef(BaseModel):
 class Feature(BaseModel):
     """One unit of work, scoped to its own worktree and branch."""
 
+    model_config = ConfigDict(use_enum_values=True)
+
     id: int
     name: str
     description: str
@@ -138,6 +149,8 @@ class Feature(BaseModel):
 class Spec(BaseModel):
     """The master spec produced by Duplo."""
 
+    model_config = ConfigDict(use_enum_values=True)
+
     title: str
     motivation: str
     inputs: list[InputRef] = Field(default_factory=list)
@@ -147,6 +160,8 @@ class Spec(BaseModel):
 
 class Verdict(BaseModel):
     """Orchestra's per-feature decision."""
+
+    model_config = ConfigDict(use_enum_values=True)
 
     feature_id: int
     decision: Literal["approve", "reject", "abstain"]
@@ -165,6 +180,8 @@ class SARIFLocation(BaseModel):
 
 class Finding(BaseModel):
     """SARIF-compatible subset for Vroom output. (Vroom is M3, but the type ships now.)"""
+
+    model_config = ConfigDict(use_enum_values=True)
 
     rule_id: str
     severity: Literal["info", "low", "medium", "high", "critical"]
