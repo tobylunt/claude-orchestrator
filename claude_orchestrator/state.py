@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .models import Feature, FeatureResult, FeatureStatus, ProgressEntry
+from .models import LegacyFeature as Feature, FeatureResult, LegacyFeatureStatus as FeatureStatus, ProgressEntry
 
 
 class StateManager:

@@ -3,12 +3,27 @@
 from __future__ import annotations
 
 from datetime import datetime
+import sys
 from enum import Enum
+
+if sys.version_info >= (3, 11):
+    from enum import StrEnum
+else:
+    class StrEnum(str, Enum):  # type: ignore[no-redef]
+        """Backport of StrEnum for Python < 3.11."""
+from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
 
-class FeatureStatus(str, Enum):
+# ---------------------------------------------------------------------------
+# Legacy (pre-Bob) types — kept for backward compatibility with orchestrator.py,
+# runner.py, state.py, and existing tests.
+# ---------------------------------------------------------------------------
+
+
+class LegacyFeatureStatus(str, Enum):
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
     PASSED = "passed"
@@ -16,14 +31,14 @@ class FeatureStatus(str, Enum):
     SKIPPED = "skipped"
 
 
-class Feature(BaseModel):
+class LegacyFeature(BaseModel):
     """A single feature to implement. Backward-compatible with {id, name, passes, steps} format."""
 
     id: int
     name: str
     passes: bool = False
     steps: list[str] = Field(default_factory=list)
-    status: FeatureStatus = FeatureStatus.PENDING
+    status: LegacyFeatureStatus = LegacyFeatureStatus.PENDING
     attempts: int = 0
     last_error: str | None = None
     last_session_id: str | None = None
@@ -49,8 +64,113 @@ class ProgressEntry(BaseModel):
     timestamp: datetime
     feature_id: int
     feature_name: str
-    status: FeatureStatus
+    status: LegacyFeatureStatus
     summary: str
     commit_hash: str | None = None
     session_id: str | None = None
     error: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Bob-era phase contracts
+# ---------------------------------------------------------------------------
+
+
+class TaskType(StrEnum):
+    """Open enum: built-in values are conveniences; CUSTOM + verifier_id covers the rest."""
+
+    UI = "ui"
+    DATA_ANALYSIS = "data_analysis"
+    GEOSPATIAL = "geospatial"
+    LIBRARY = "library"
+    CLI = "cli"
+    INTEGRATION = "integration"
+    ML_TRAINING = "ml_training"
+    INFRASTRUCTURE = "infrastructure"
+    CUSTOM = "custom"
+
+
+class FeatureStatus(StrEnum):
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    MCLOOP_DONE = "mcloop_done"
+    ORCHESTRA_PENDING = "orchestra_pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    MERGED = "merged"
+    SKIPPED = "skipped"
+    FAILED = "failed"
+
+
+class VerificationPlan(BaseModel):
+    """A feature's declared verification approach."""
+
+    verifier_id: str = Field(..., description="Registered verifier id, e.g. 'python_pytest'")
+    success_criteria: list[str] = Field(default_factory=list)
+    required_tools: list[str] = Field(default_factory=list)
+
+
+class InputRef(BaseModel):
+    """A reference to a multimodal input the user provided to Duplo."""
+
+    kind: Literal["file", "url", "text"]
+    value: str
+    description: str | None = None
+
+
+class Feature(BaseModel):
+    """One unit of work, scoped to its own worktree and branch."""
+
+    id: int
+    name: str
+    description: str
+    task_type: TaskType
+    verification_plan: VerificationPlan
+    branch: str | None = None
+    worktree_path: Path | None = None
+    status: FeatureStatus = FeatureStatus.PENDING
+    attempts: int = 0
+    cost_usd: float = 0.0
+    last_error: str | None = None
+    updated_at: datetime | None = None
+
+
+class Spec(BaseModel):
+    """The master spec produced by Duplo."""
+
+    title: str
+    motivation: str
+    inputs: list[InputRef] = Field(default_factory=list)
+    features: list[Feature]
+    rubric_meta_check_passed: bool = False
+
+
+class Verdict(BaseModel):
+    """Orchestra's per-feature decision."""
+
+    feature_id: int
+    decision: Literal["approve", "reject", "abstain"]
+    confidence: float = Field(ge=0.0, le=1.0)
+    debate_log_path: Path
+    judge_reasoning: str
+
+
+class SARIFLocation(BaseModel):
+    """Subset of SARIF physicalLocation/region."""
+
+    uri: str
+    start_line: int
+    end_line: int | None = None
+
+
+class Finding(BaseModel):
+    """SARIF-compatible subset for Vroom output. (Vroom is M3, but the type ships now.)"""
+
+    rule_id: str
+    severity: Literal["info", "low", "medium", "high", "critical"]
+    location: SARIFLocation
+    message: str
+    proposed_fix: Path | None = None
+    auditor: str
+    fingerprint: str
+    status: Literal["open", "in_progress", "resolved", "wontfix"] = "open"

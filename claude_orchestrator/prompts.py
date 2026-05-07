@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .config import OrchestratorConfig
-    from .models import Feature
+    from .models import LegacyFeature as Feature
 
 FEATURE_PROMPT_TEMPLATE = """\
 You are implementing a single feature for this project. Follow these instructions precisely.

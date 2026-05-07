@@ -24,7 +24,7 @@ from claude_agent_sdk import (
 
 from .hooks import OrchestratorHooks
 from .human_input import HumanInputHandler
-from .models import Feature, FeatureResult
+from .models import LegacyFeature as Feature, FeatureResult
 from .prompts import build_feature_prompt
 
 if TYPE_CHECKING:

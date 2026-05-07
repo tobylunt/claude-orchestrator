@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from claude_orchestrator.models import FeatureResult, FeatureStatus, ProgressEntry
+from claude_orchestrator.models import FeatureResult, LegacyFeatureStatus as FeatureStatus, ProgressEntry
 from claude_orchestrator.state import StateManager
 
 

@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from .logging_config import setup_logger
-from .models import Feature, FeatureResult, FeatureStatus, ProgressEntry
+from .models import LegacyFeature as Feature, FeatureResult, LegacyFeatureStatus as FeatureStatus, ProgressEntry
 from .runner import FeatureRunner
 from .state import StateManager
 
