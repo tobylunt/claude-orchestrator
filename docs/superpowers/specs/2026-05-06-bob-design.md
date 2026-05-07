@@ -224,12 +224,18 @@ Convergence uses **KS-statistic stability detection** (Hu et al. 2025): debate t
 Long-running process started by `bob vroom` or `bob run --vroom`. Runs alongside development. **Cycle triggers:** (a) on every push to `main` (git post-receive hook or polling); (b) on a configurable timer (default: every 30 minutes when no recent activity); (c) on demand via `bob vroom now`. Per cycle:
 
 1. Snapshot `main` at current HEAD.
-2. Run **auditor pool in parallel** (concurrent subprocesses, each in its own worktree):
+2. Run **auditor pool in parallel** (concurrent subprocesses, each in its own worktree). Default roster (configurable via `vroom.auditors`):
    - `pr_agent` — PR-Agent v0.32 (general code quality, multi-model).
    - `semgrep` — Semgrep (static analysis, security rules).
    - `claude_architect` — Claude Sonnet auditor for architecture/design.
    - `codex_security` — Codex auditor for security/edge cases.
+   - `a11y` — accessibility audit (axe-core for web; markdown/UI heuristics elsewhere).
+   - `performance` — performance auditor (looks for N+1 queries, blocking IO, hot-loop allocations).
+   - `compliance` — license, secrets-leak, PII-exposure scanning (truffleHog, license-checker).
+   - `seo` — SEO auditor for web projects (Lighthouse subset).
    - User-defined task-specific auditors (e.g., `geospatial_validator`, `data_schema_auditor`).
+
+The a11y/performance/compliance/seo specialist taxonomy is inspired by maestro-orchestrate's specialist roster (see Appendix A); each is opt-in and skipped when irrelevant to the project type.
 3. Each auditor emits **SARIF**.
 4. **Coalescer:** dedupe by location + fingerprint, cluster related findings, assign severity.
 5. Append to `findings.jsonl` (append-only; never deleted, marked resolved/wontfix).
@@ -454,6 +460,8 @@ docs/superpowers/specs/
 ## 13. Open questions / deferred
 
 - **Claude Code plugin distribution:** wrap Bob as a Claude Code plugin with slash commands (`/bob duplo`, `/bob run`)? Useful but adds a second distribution channel. Defer to v1.1.
+- **Multi-runtime plugin packaging:** ship Bob as a Claude Code plugin AND a Codex plugin AND a Gemini extension from a single canonical source (maestro-orchestrate's `src/`-then-generate pattern). Powerful but only worth the engineering once Bob's core stabilizes. Defer to v1.2+.
+- **Express workflow** for trivial features: skip Orchestra and Vroom on small additions, run only Duplo→McLoop→one-verifier→merge. Inspired by maestro-orchestrate's Express path. Reduces ceremony for one-line fixes; adds a routing decision (who classifies a task as Express?). Defer to v1.1.
 - **Vroom triage UI:** terminal TUI vs simple local web page for finding triage? TUI for v1; web UI deferred.
 - **Multi-repo Vroom:** auditing repo A and opening PRs across repos. Out of scope for v1.
 - **Distribution:** PyPI for v1; Homebrew formula and Docker image deferred.
@@ -479,7 +487,26 @@ docs/superpowers/specs/
 
 ---
 
-## Appendix A: How this design responds to the talk's manifesto
+## Appendix A: Related work — Maestro and why Bob is not a Maestro fork
+
+[maestro-orchestrate](https://github.com/josstei/maestro-orchestrate) is the closest existing OSS project to Bob's spec-first phased workflow. It is a multi-runtime plugin/extension (Gemini CLI, Claude Code, Codex, Qwen Code) with 39 specialist agents, a two-tier workflow (Express / Standard), and standalone audit commands.
+
+**Where Maestro and Bob converge** (~60% overlap by surface area): spec-first design, phased execution with approval gates, code review on outputs, persisted session state, opt-in audit specialists.
+
+**Where Bob differs (the load-bearing 40%):**
+1. **Cross-runtime adversarial debate (Orchestra).** Maestro is multi-runtime in *distribution* — same code installs into one host runtime per session. Bob's Orchestra is multi-runtime in *coordination* — Claude and Codex run as separate processes that argue with each other within one orchestration step. This shape doesn't fit a single-host plugin.
+2. **Continuous proactive audit (Vroom).** Maestro's audits are user-invoked and reactive. Vroom is autonomous — long-running, propose-and-merge, runs whether or not a CLI session is open. Cannot be a plugin because it outlives any session.
+3. **Verifier rubric protocol with halt-loud `Inconclusive`.** Maestro requires "validation results for the changed surface" and "no Critical/Major findings" — generic. Bob has an explicit per-task-type verifier protocol with a meta-rubric coverage check before McLoop runs, and `Inconclusive` results halt the loop. This is a deeper safety commitment.
+4. **Sandbox tiers** (hooks → Docker → Devcontainer) with a PreToolUse policy engine. Maestro defers entirely to host runtime permissions.
+5. **Implementation language and shape.** Maestro is JavaScript/Node, distributed as plugins. Bob is Python (extending `claude-orchestrator`), distributed as a standalone CLI/library.
+
+**What Bob borrows from Maestro:** the auditor specialist taxonomy (a11y, perf, compliance, SEO) inspired Vroom's expanded default roster; the Express/Standard two-tier workflow is a strong v1.1 idea (§13); the canonical-`src/`-with-codegen distribution pattern is the right model if Bob ever ships as multi-runtime plugins (§13).
+
+**Could Bob have been built on top of Maestro?** Maestro could replace ~60% of Bob (Duplo + McLoop + a sequential Orchestra-as-review). It could not host Vroom (plugin sessions don't outlive the host CLI), Orchestra-as-cross-runtime-debate (single-host architecture), the verifier protocol (would require replacing Maestro's execute/complete phases), or our existing `hooks.py` security work (Node/Python language mismatch). Building on top would have meant rewriting in Node and inheriting design opinions that don't match the talk's specific vision.
+
+---
+
+## Appendix B: How this design responds to the talk's manifesto
 
 | Talk claim | This design's response |
 |---|---|
