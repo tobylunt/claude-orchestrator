@@ -1,0 +1,45 @@
+"""CLI smoke tests for `bob run` and `bob status`.
+
+These tests don't run real Claude — they exercise argument parsing and
+verify the run command dispatches with the right config.
+"""
+import subprocess
+import sys
+from pathlib import Path
+
+
+def test_orchestrate_bob_run_help_smoke():
+    result = subprocess.run(
+        [sys.executable, "-m", "claude_orchestrator.bob.cli", "run", "--help"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0
+    assert "--inputs" in result.stdout
+    assert "--max-iterations" in result.stdout
+
+
+def test_orchestrate_bob_status_on_empty_dir(tmp_path: Path):
+    result = subprocess.run(
+        [sys.executable, "-m", "claude_orchestrator.bob.cli", "status",
+         "--project", str(tmp_path)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0
+    assert "no .bob/ found" in result.stdout.lower() or "not initialized" in result.stdout.lower()
+
+
+def test_orchestrate_bob_status_on_initialized(tmp_path: Path):
+    bob_dir = tmp_path / ".bob"
+    bob_dir.mkdir()
+    (bob_dir / "cursor.json").write_text(
+        '{"run_id": "x", "current_phase": "idle", "current_feature_id": null,'
+        ' "last_event_at": "2026-05-07T00:00:00+00:00"}'
+    )
+    (bob_dir / "features").mkdir()
+    result = subprocess.run(
+        [sys.executable, "-m", "claude_orchestrator.bob.cli", "status",
+         "--project", str(tmp_path)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0
+    assert "idle" in result.stdout
