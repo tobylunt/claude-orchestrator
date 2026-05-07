@@ -31,11 +31,22 @@ The system stands on community giants (Anthropic's `ralph-wiggum` plugin, AutoGe
 ## 3. Architectural overview
 
 ```
-                ┌──────────────────────────────────────────────┐
-                │              .bob/  (state on disk)           │
-                │  spec.md  features.json  findings.jsonl      │
-                │  cursor.json  inputs/  worktrees/  debates/   │
-                └──────────────────────────────────────────────┘
+                ┌──────────────────────────────────────────────────────┐
+                │                .bob/  (state on disk)                 │
+                │                                                       │
+                │  PROJECT-LEVEL (cross-feature):                       │
+                │    spec.md          findings.jsonl   cursor.json     │
+                │    run-log.jsonl    inputs/                          │
+                │                                                       │
+                │  PER-FEATURE (one dir each, auto-discovered):         │
+                │    features/001-auth/  features/002-dashboard/  ...  │
+                │      └─ spec.md, state.json, activity.md,            │
+                │         failed_attempts.md, debate.json,             │
+                │         verifier-results.jsonl                        │
+                │                                                       │
+                │  WORKTREES:                                           │
+                │    worktrees/001-auth/  worktrees/002-dashboard/  ...│
+                └──────────────────────────────────────────────────────┘
                                      ▲
                                      │
    user inputs ────► Duplo ──► spec ──► Coordinator (Python, ~100 LOC)
@@ -57,7 +68,11 @@ The system stands on community giants (Anthropic's `ralph-wiggum` plugin, AutoGe
      - OpenTelemetry traces shipped to Phoenix (or any OTLP backend)
 ```
 
-State lives in git plus a `.bob/` directory. The coordinator is plain Python (~100 LOC). Vroom runs as a long-lived process alongside development. There is no event bus, no SQLite, no LangGraph — just files, git, subprocess calls, and a small state machine.
+State lives in git plus a `.bob/` directory using a **two-level layout**: project-level files for things that span features (master spec, cross-cutting findings, current cursor, run log, original inputs) and a per-feature subdirectory under `.bob/features/<id>-<slug>/` for everything inherently scoped to one feature (its spec section, status, activity log, failed-attempts log, debate transcript, verifier results). Features are auto-discovered by walking the directory; numeric prefixes preserve order. No manifest file — the directory listing is the source of truth, which avoids the manifest-out-of-sync failure mode.
+
+The coordinator is plain Python (~100 LOC). Vroom runs as a long-lived process alongside development. There is no event bus, no SQLite, no LangGraph — just files, git, subprocess calls, and a small state machine.
+
+**Why two levels:** project-level files answer "where are we right now and what's cross-cutting?" Per-feature dirs answer "what's the full history of this one feature?" The split also means parallel processes (e.g., McLoop on feature 3, Vroom auditing main) write into disjoint paths, eliminating concurrent-write conflicts on shared files.
 
 ## 4. Reuse map (standing on giants)
 
@@ -139,7 +154,7 @@ class Finding(BaseModel):
 
 ### 6.1 Coordinator (`bob/coordinator.py`, ~100 LOC)
 
-Plain Python state machine. Reads `features.json`, walks phases per feature, dispatches Vroom in parallel. Persists `cursor.json` (`{phase, feature_id, status}`) for resumability.
+Plain Python state machine. Walks `.bob/features/` (sorted by numeric prefix) to enumerate features, advances each through phases, dispatches Vroom in parallel. Persists `.bob/cursor.json` (`{run_id, current_phase, current_feature_id, last_event_at, total_cost_usd}`) for resumability and `.bob/run-log.jsonl` (append-only event stream) for project-level history.
 
 ```python
 class Coordinator:
@@ -168,25 +183,25 @@ Termination requires *all of*:
 3. **Meta-rubric check passes:** LLM-as-judge confirms each feature's `verification_plan` actually covers its `success_criteria`. *Failure here halts Duplo loud — never passes a feature with insufficient rubric coverage.*
 4. User signs off via HITL gate.
 
-Output: `.bob/spec.md` (human-readable) + `.bob/features.json` (machine-readable).
+Output: `.bob/spec.md` (master spec, human-readable) plus a per-feature directory `.bob/features/<NNN>-<slug>/` for each feature, containing `spec.md` (this feature's section, copied from the master for fast access), `state.json` (`{id, name, task_type, verification_plan, status, attempts, cost_usd, branch, worktree_path, last_error, updated_at}`), and empty stubs for `activity.md`, `failed_attempts.md`, `debate.json`, `verifier-results.jsonl` ready for downstream phases to populate.
 
 ### 6.3 McLoop (`bob/mcloop/`)
 
-Per-feature, in a fresh `git worktree`. Uses the **Huntley bash-loop pattern, not the in-session plugin.** Each iteration is a fresh `claude -p` subprocess with a stable prompt template that re-reads:
-- `.bob/spec.md`
-- the feature description
-- the worktree's `plan.md` and `activity.md`
-- the worktree's `failed_attempts.md`
+Per-feature, in a fresh `git worktree` under `.bob/worktrees/<NNN>-<slug>/`. Uses the **Huntley bash-loop pattern, not the in-session plugin.** Each iteration is a fresh `claude -p` subprocess with a stable prompt template that re-reads:
+- `.bob/spec.md` (master spec)
+- `.bob/features/<NNN>-<slug>/spec.md` (this feature's section)
+- `.bob/features/<NNN>-<slug>/activity.md`
+- `.bob/features/<NNN>-<slug>/failed_attempts.md`
 
 Per-iteration loop body:
 
 ```
 1. Spawn `claude -p` subprocess with prompt_template + feature
 2. Subprocess does ONE focused pass:
-     - read spec, plan, activity, failed_attempts
+     - read master spec, feature spec, activity, failed_attempts
      - pick smallest unresolved item
-     - edit code
-     - run verifier adapter (see §6.7)
+     - edit code in the worktree
+     - run verifier adapter (see §6.7), append result to verifier-results.jsonl
      - if Ok: commit, append to activity.md
      - if Fail: append to failed_attempts.md with reason
      - if Inconclusive: HALT LOUD, exit with escalation signal
@@ -213,7 +228,7 @@ Per-feature, after McLoop emits EXIT_SIGNAL but before merge. Uses **AutoGen Gro
 - `CodexAgent` (GPT-5.2) — adversarial review, attacks the diff.
 - `JudgeAgent` (Claude Opus 4.6) — synthesizes consensus or flags disagreement.
 
-Convergence uses **KS-statistic stability detection** (Hu et al. 2025): debate terminates when judgment-distribution stabilizes for 2 consecutive rounds (KS < 0.05), or on explicit consensus, or on `max_rounds` (default 5). Output: `Verdict`.
+Convergence uses **KS-statistic stability detection** (Hu et al. 2025): debate terminates when judgment-distribution stabilizes for 2 consecutive rounds (KS < 0.05), or on explicit consensus, or on `max_rounds` (default 5). Output: `Verdict`, persisted to `.bob/features/<NNN>-<slug>/debate.json` (full transcript) plus a summary entry in the feature's `state.json`.
 
 - `approve` → feature merges to main, worktree archived, status MERGED.
 - `reject` → feature returns to McLoop with debate log appended to `activity.md` as additional context. Bounded retries (default: 2 reject-retry cycles per feature; 3rd rejection promotes to HITL).
@@ -238,7 +253,7 @@ Long-running process started by `bob vroom` or `bob run --vroom`. Runs alongside
 The a11y/performance/compliance/seo specialist taxonomy is inspired by maestro-orchestrate's specialist roster (see Appendix A); each is opt-in and skipped when irrelevant to the project type.
 3. Each auditor emits **SARIF**.
 4. **Coalescer:** dedupe by location + fingerprint, cluster related findings, assign severity.
-5. Append to `findings.jsonl` (append-only; never deleted, marked resolved/wontfix).
+5. Append to `.bob/findings.jsonl` (project-level, append-only; never deleted, marked resolved/wontfix). Findings are project-level rather than per-feature because Vroom audits cross-cutting concerns (architecture drift, accumulated tech debt) that don't always map to a single feature.
 6. **HITL triage gate (default-on):** user approves which findings to attempt fixes for.
 7. For approved findings: spawn an isolated McLoop worker on a `vroom/<finding-id>` branch with the finding as the spec.
 8. Verification gate: must pass the original feature's verifier adapter + the new finding's regression check.
@@ -315,32 +330,40 @@ Each gate disable-able per run with `--no-gate <name>`. Default-on because the t
 ```
 1. user invokes:  bob run --inputs ./brief.pdf ./screenshots/
 2. Duplo:
-     - reads inputs (multimodal)
-     - emits draft spec.md + features.json
+     - reads .bob/inputs/ (multimodal)
+     - emits .bob/spec.md
+     - creates .bob/features/001-auth/, .bob/features/002-dashboard/, ...
+       each with spec.md + state.json + empty activity/failed/debate/verifier files
      - meta-rubric check on each feature (halt loud if inadequate)
      - HITL gate: user approves
 3. Coordinator:
+     - records run start in .bob/cursor.json + .bob/run-log.jsonl
      - starts vroom thread (background)
-     - for feature 1:
+     - walks .bob/features/, picks 001-auth:
 4. McLoop:
-     - creates worktree at .bob/worktrees/feat-1
+     - creates worktree at .bob/worktrees/001-auth/
      - sandbox tier wraps subprocess
-     - spawns claude -p (iter 1) → edits, verifier returns Ok → commit
-     - spawns claude -p (iter 2) → edits, verifier returns Fail → log, retry
+     - spawns claude -p (iter 1) → edits, verifier returns Ok
+       → commit; appends to .bob/features/001-auth/{activity.md, verifier-results.jsonl}
+     - spawns claude -p (iter 2) → verifier returns Fail
+       → appends to .bob/features/001-auth/failed_attempts.md
      - ...
      - spawns claude -p (iter N) → emits EXIT_SIGNAL
+     - updates .bob/features/001-auth/state.json: status=mcloop_done
 5. Orchestra:
      - AutoGen GroupChat: Claude defends, Codex attacks, Judge synthesizes
      - KS detects stability at round 3
+     - writes .bob/features/001-auth/debate.json
      - Verdict: approve
-6. Coordinator: merges feat-1 worktree to main; status = MERGED
+6. Coordinator: merges 001-auth worktree to main; state.json: status=merged
 7. Vroom (running in parallel):
      - audits new commit
-     - findings clustered, severity assigned
+     - findings clustered, severity assigned, appended to .bob/findings.jsonl
      - HITL triage: user picks 2 findings to fix
-     - spawns fix-McLoops on vroom/<finding-id> branches
+     - spawns fix-McLoops on vroom/<finding-id> branches (in their own worktrees)
      - verifier passes, diffs small → auto-merge
-8. Coordinator advances to feature 2.
+     - findings status updated in .bob/findings.jsonl (append-only: new entry marks them resolved)
+8. Coordinator advances to 002-dashboard.
 ```
 
 ## 8. Failure modes (all Reddit-validated)
@@ -388,7 +411,7 @@ Configurable exporter via `OTEL_EXPORTER_OTLP_ENDPOINT`. Default backend recomme
 - **Integration tests** with mocked Claude/Codex CLIs (subprocess fakes that emit deterministic outputs) covering each phase.
 - **End-to-end smoke test:** `bob run` against a tiny demo repo (a Python CLI with a tested function) verifying all four phases complete on real APIs (gated behind an env flag for cost reasons).
 - **Verifier-coverage test:** synthetic features with known-bad rubrics — confirm the meta-rubric check rejects them.
-- **Failure-injection tests:** deliberately corrupt features.json, kill subprocesses mid-iteration, exhaust budget — confirm graceful state persistence and resumability.
+- **Failure-injection tests:** deliberately corrupt a feature's `state.json`, delete a feature directory mid-run, kill subprocesses mid-iteration, exhaust budget — confirm graceful state persistence and resumability.
 
 ## 12. Project layout
 
