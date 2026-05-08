@@ -81,6 +81,7 @@ class Coordinator:
         mcloop: McLoopCallable,
         orchestra: OrchestraCallable,
         gates: GateRegistry,
+        verbose: bool = True,
     ) -> None:
         self.project_root = project_root
         self.bob_dir = project_root / ".bob"
@@ -92,6 +93,7 @@ class Coordinator:
         self.mcloop = mcloop
         self.orchestra = orchestra
         self.gates = gates
+        self.verbose = verbose
 
     def run(self, scope: RunScope) -> None:
         run_id = str(uuid.uuid4())
@@ -284,9 +286,52 @@ class Coordinator:
             "last_event_at": datetime.now(UTC).isoformat(),
         })
 
+    def _format_progress(self, event: str, details: dict) -> str | None:
+        """Map a structured event to a one-line human-readable progress message.
+
+        Returns None for events we don't surface (e.g., worktree_removed).
+        """
+        fid = details.get("feature_id")
+        name = details.get("name")
+        if event == "run_started":
+            rid = details.get("run_id", "")
+            return f"-> Bob run starting (run_id: {rid[:8]}...)"
+        if event == "post_duplo_gate":
+            return f"-> Duplo gate: {details.get('decision')}"
+        if event == "feature_started":
+            return f"-> Feature {fid} [{name}]: starting"
+        if event == "worktree_created":
+            return f"-> Feature {fid}: worktree at {details.get('path')}"
+        if event == "mcloop_finished":
+            return f"-> Feature {fid}: McLoop {details.get('outcome')} in {details.get('iterations')} iter(s)"
+        if event == "orchestra_verdict":
+            conf = details.get("confidence", 0.0)
+            return f"-> Feature {fid}: Orchestra {details.get('decision')} (confidence {conf:.2f})"
+        if event == "feature_merged":
+            return f"✓ Feature {fid}: merged"
+        if event == "feature_failed":
+            return f"✗ Feature {fid}: failed — {details.get('reason', '')}"
+        if event == "feature_rejected":
+            return f"✗ Feature {fid}: rejected by Orchestra — {details.get('reason', '')}"
+        if event == "feature_paused_pre_orchestra":
+            return f"⏸ Feature {fid}: paused before Orchestra (shutdown)"
+        if event == "feature_resumed_at_orchestra":
+            return f"↻ Feature {fid}: resuming at Orchestra"
+        if event == "worktree_remove_failed":
+            return f"! Feature {fid}: worktree cleanup failed — {details.get('reason', '')}"
+        if event == "run_aborted":
+            return f"⏹ Bob run aborted: {details.get('reason', '')}"
+        if event == "run_finished":
+            return "-> Bob run finished"
+        return None  # unknown / not surfaced
+
     def _log_event(self, event: str, details: dict) -> None:
         append_jsonl(self.bob_dir / "run-log.jsonl", {
             "ts": datetime.now(UTC).isoformat(),
             "event": event,
             **details,
         })
+        if self.verbose:
+            line = self._format_progress(event, details)
+            if line is not None:
+                print(line)

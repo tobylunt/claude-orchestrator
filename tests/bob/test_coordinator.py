@@ -86,6 +86,7 @@ def test_coordinator_walks_features_in_order(project_root: Path, monkeypatch):
         mcloop=mcloop,
         orchestra=orchestra,
         gates=gates,
+        verbose=False,
     )
     coord.run(RunScope(includes_duplo=True))
 
@@ -115,6 +116,7 @@ def test_coordinator_writes_run_log(project_root: Path):
     coord = Coordinator(
         project_root=project_root, duplo=duplo, mcloop=mcloop,
         orchestra=orchestra, gates=gates,
+        verbose=False,
     )
     coord.run(RunScope(includes_duplo=True))
 
@@ -142,6 +144,7 @@ def test_coordinator_respects_post_duplo_reject(project_root: Path, monkeypatch)
     coord = Coordinator(
         project_root=project_root, duplo=duplo, mcloop=mcloop,
         orchestra=orchestra, gates=gates,
+        verbose=False,
     )
     coord.run(RunScope(includes_duplo=True))
 
@@ -162,6 +165,7 @@ def test_coordinator_marks_feature_failed_on_mcloop_halt(project_root: Path):
     coord = Coordinator(
         project_root=project_root, duplo=duplo, mcloop=mcloop,
         orchestra=orchestra, gates=gates,
+        verbose=False,
     )
     coord.run(RunScope(includes_duplo=True))
 
@@ -198,6 +202,7 @@ def test_coordinator_creates_and_removes_worktree(project_root: Path):
     coord = Coordinator(
         project_root=project_root, duplo=duplo, mcloop=mcloop_callable,
         orchestra=orchestra_callable, gates=gates,
+        verbose=False,
     )
     coord.run(RunScope(includes_duplo=True))
 
@@ -235,6 +240,7 @@ def test_coordinator_aborts_on_shutdown_request(project_root: Path, monkeypatch)
     coord = Coordinator(
         project_root=project_root, duplo=duplo, mcloop=mcloop,
         orchestra=orchestra, gates=gates,
+        verbose=False,
     )
     try:
         coord.run(RunScope(includes_duplo=True))
@@ -269,6 +275,7 @@ def test_coordinator_resumes_from_mcloop_done(project_root: Path):
     coord = Coordinator(
         project_root=project_root, duplo=duplo, mcloop=mcloop,
         orchestra=orchestra, gates=gates,
+        verbose=False,
     )
 
     # First run: get feature to MCLOOP_DONE by simulating the prior state.
@@ -297,6 +304,59 @@ def test_coordinator_resumes_from_mcloop_done(project_root: Path):
     assert final["status"] == "merged"
 
 
+def test_coordinator_emits_progress_to_stdout(project_root: Path, capsys):
+    spec = _spec_with_features("a")
+    duplo = MagicMock(return_value=spec)
+    mcloop = MagicMock(return_value=McLoopResult(
+        outcome="exit_signal", iterations=1, last_reason="ok", last_status="ok",
+    ))
+    orchestra = MagicMock(return_value=Verdict(
+        feature_id=1, decision="approve", confidence=1.0,
+        debate_log_path=project_root / ".bob" / "fake.json",
+        judge_reasoning="lgtm",
+    ))
+    gates = GateRegistry(disabled={"post_duplo"})
+
+    coord = Coordinator(
+        project_root=project_root, duplo=duplo, mcloop=mcloop,
+        orchestra=orchestra, gates=gates,
+        verbose=True,
+    )
+    coord.run(RunScope(includes_duplo=True))
+    captured = capsys.readouterr()
+    out = captured.out
+    # Confirm key milestones appear:
+    assert "Bob run starting" in out or "run starting" in out.lower()
+    assert "Feature 1" in out and "starting" in out
+    assert "McLoop" in out and "exit_signal" in out
+    assert "Orchestra" in out and "approve" in out
+    assert "merged" in out
+    assert "Bob run finished" in out or "run finished" in out.lower()
+
+
+def test_coordinator_silent_when_verbose_false(project_root: Path, capsys):
+    spec = _spec_with_features("a")
+    duplo = MagicMock(return_value=spec)
+    mcloop = MagicMock(return_value=McLoopResult(
+        outcome="exit_signal", iterations=1, last_reason="ok", last_status="ok",
+    ))
+    orchestra = MagicMock(return_value=Verdict(
+        feature_id=1, decision="approve", confidence=1.0,
+        debate_log_path=project_root / ".bob" / "fake.json",
+        judge_reasoning="lgtm",
+    ))
+    gates = GateRegistry(disabled={"post_duplo"})
+
+    coord = Coordinator(
+        project_root=project_root, duplo=duplo, mcloop=mcloop,
+        orchestra=orchestra, gates=gates,
+        verbose=False,
+    )
+    coord.run(RunScope(includes_duplo=True))
+    captured = capsys.readouterr()
+    assert captured.out == "" or captured.out.strip() == ""
+
+
 def test_coordinator_does_not_overwrite_merged_features_on_rerun(project_root: Path):
     """Re-running with the same spec must not reset status of already-merged features."""
     import json
@@ -316,6 +376,7 @@ def test_coordinator_does_not_overwrite_merged_features_on_rerun(project_root: P
     coord = Coordinator(
         project_root=project_root, duplo=duplo, mcloop=mcloop,
         orchestra=orchestra, gates=gates,
+        verbose=False,
     )
 
     # First run: feature is merged.
@@ -328,6 +389,7 @@ def test_coordinator_does_not_overwrite_merged_features_on_rerun(project_root: P
     coord2 = Coordinator(
         project_root=project_root, duplo=duplo, mcloop=mcloop,
         orchestra=orchestra, gates=gates,
+        verbose=False,
     )
     coord2.run(RunScope(includes_duplo=True))
 
