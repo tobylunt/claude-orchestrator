@@ -116,3 +116,73 @@ m
 """)
     with pytest.raises(SpecParseError, match="task_type"):
         parse_markdown_spec(md)
+
+
+def test_parse_multiline_description_with_pipe(tmp_path: Path):
+    """`description: |` followed by indented text becomes a multi-line description."""
+    md = tmp_path / "spec.md"
+    md.write_text("""\
+# Demo
+## Motivation
+m
+## Features
+### F1: a
+- task_type: library
+- verifier: python_pytest
+- success_criteria:
+  - x
+- description: |
+    Line one of description.
+    Line two of description.
+""")
+    spec = parse_markdown_spec(md)
+    desc = spec.features[0].description
+    assert "Line one" in desc
+    assert "Line two" in desc
+    assert desc != "|"
+
+
+def test_parse_singleline_description_still_works(tmp_path: Path):
+    """`description: short text` (no pipe) should still parse as before."""
+    md = tmp_path / "spec.md"
+    md.write_text("""\
+# Demo
+## Motivation
+m
+## Features
+### F1: a
+- task_type: library
+- verifier: python_pytest
+- success_criteria:
+  - x
+- description: A short single-line description.
+""")
+    spec = parse_markdown_spec(md)
+    assert spec.features[0].description == "A short single-line description."
+
+
+def test_parse_multiline_description_strips_common_indent(tmp_path: Path):
+    """Common leading whitespace on continuation lines should be stripped."""
+    md = tmp_path / "spec.md"
+    md.write_text("""\
+# Demo
+## Motivation
+m
+## Features
+### F1: a
+- task_type: library
+- verifier: python_pytest
+- success_criteria:
+  - x
+- description: |
+    Hello
+    World
+""")
+    spec = parse_markdown_spec(md)
+    desc = spec.features[0].description
+    # Should not have the 4-space leading indent on every line.
+    lines = desc.split("\n")
+    # At least the first non-empty line shouldn't start with 4 spaces of indent
+    assert lines[0] == "Hello" or lines[0].lstrip() == "Hello"
+    # And the second line should be "World" (de-indented)
+    assert "World" in desc

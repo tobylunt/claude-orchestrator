@@ -101,20 +101,64 @@ def _parse_feature_block(block: list[str]) -> Feature:
 
     fields: dict[str, str | list[str]] = {}
     current_list_field: str | None = None
+    block_scalar_field: str | None = None
+    block_scalar_lines: list[str] = []
+    block_scalar_base_indent: int | None = None
+
+    def _commit_block_scalar() -> None:
+        nonlocal block_scalar_field, block_scalar_lines, block_scalar_base_indent
+        if block_scalar_field is None:
+            return
+        if block_scalar_base_indent is not None:
+            stripped = [
+                (l[block_scalar_base_indent:] if l.startswith(" " * block_scalar_base_indent) else l.lstrip())
+                for l in block_scalar_lines
+            ]
+        else:
+            stripped = [l.strip() for l in block_scalar_lines]
+        fields[block_scalar_field] = "\n".join(stripped).rstrip()
+        block_scalar_field = None
+        block_scalar_lines = []
+        block_scalar_base_indent = None
+
     for line in block[1:]:
         m = _FIELD.match(line)
         if m:
+            _commit_block_scalar()
             key, value = m.group(1), m.group(2).strip()
-            if value:
+            if value == "|":
+                block_scalar_field = key
+                block_scalar_lines = []
+                block_scalar_base_indent = None
+                current_list_field = None
+            elif value:
                 fields[key] = value
                 current_list_field = None
             else:
                 fields[key] = []
                 current_list_field = key
             continue
+
+        if block_scalar_field is not None:
+            stripped_line = line.rstrip()
+            if not stripped_line:
+                block_scalar_lines.append("")
+                continue
+            indent = len(line) - len(line.lstrip())
+            if block_scalar_base_indent is None:
+                block_scalar_base_indent = indent
+            if indent < block_scalar_base_indent:
+                _commit_block_scalar()
+                # Fall through to sub-bullet handling below
+            else:
+                block_scalar_lines.append(line)
+                continue
+
         sm = _SUB_BULLET.match(line)
         if sm and current_list_field:
             fields[current_list_field].append(sm.group(1).strip())  # type: ignore[union-attr]
+
+    _commit_block_scalar()
 
     try:
         task_type_str = str(fields["task_type"])
