@@ -243,3 +243,52 @@ def test_coordinator_aborts_on_shutdown_request(project_root: Path, monkeypatch)
     # Run-log records the shutdown:
     events = [e["event"] for e in read_jsonl(project_root / ".bob" / "run-log.jsonl")]
     assert "run_aborted" in events
+
+
+def test_coordinator_resumes_from_mcloop_done(project_root: Path):
+    """When a feature is already MCLOOP_DONE, skip McLoop and run Orchestra directly.
+
+    Simulates a graceful shutdown between McLoop and Orchestra: feature has
+    status=MCLOOP_DONE on disk, with the worktree still present.
+    """
+    import json
+    spec = _spec_with_features("a")
+
+    duplo = MagicMock(return_value=spec)
+    mcloop = MagicMock()  # SHOULD NOT BE CALLED
+    orchestra = MagicMock(return_value=Verdict(
+        feature_id=1, decision="approve", confidence=1.0,
+        debate_log_path=project_root / ".bob" / "fake.json",
+        judge_reasoning="lgtm",
+    ))
+    gates = GateRegistry(disabled={"post_duplo"})
+
+    coord = Coordinator(
+        project_root=project_root, duplo=duplo, mcloop=mcloop,
+        orchestra=orchestra, gates=gates,
+    )
+
+    # First run: get feature to MCLOOP_DONE by simulating the prior state.
+    # We materialize the spec then manually set status to MCLOOP_DONE and
+    # create a worktree (so the resume path doesn't try to recreate it).
+    coord._materialize_spec(spec)
+    feature_dir = project_root / ".bob" / "features" / "001-a"
+    state = json.loads((feature_dir / "state.json").read_text())
+    state["status"] = "mcloop_done"
+    (feature_dir / "state.json").write_text(json.dumps(state))
+
+    # Pre-create the worktree (simulating prior run's leftover state).
+    from claude_orchestrator.bob.worktree import add_worktree
+    worktree_path = project_root / ".bob" / "worktrees" / "001-a"
+    add_worktree(project_root, worktree_path, branch="bob/001-a")
+
+    # Now run with includes_duplo=False (we already materialized).
+    coord.run(RunScope(includes_duplo=False))
+
+    # McLoop should NOT have been called.
+    mcloop.assert_not_called()
+    # Orchestra DID get called.
+    assert orchestra.call_count == 1
+    # Final status: merged.
+    final = json.loads((feature_dir / "state.json").read_text())
+    assert final["status"] == "merged"

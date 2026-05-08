@@ -165,60 +165,67 @@ class Coordinator:
     def _run_feature(self, feature: Feature, feature_dir: Path, run_id: str) -> None:
         self._set_cursor("mcloop", feature.id, run_id)
         self._log_event("feature_started", {"feature_id": feature.id, "name": feature.name})
-        feature.status = FeatureStatus.IN_PROGRESS
-        feature.updated_at = datetime.now(UTC)
-        self._save_feature(feature, feature_dir)
 
         worktree = self.bob_dir / "worktrees" / _feature_dirname(feature)
         branch_name = f"bob/{_feature_dirname(feature)}"
 
-        # Create worktree if not already present. Both path and branch are
-        # handled idempotently by add_worktree (M2b), so retries after
-        # crash recovery work even if the branch was created in a prior run.
-        if not worktree.exists():
-            try:
-                add_worktree(self.project_root, worktree, branch=branch_name)
-                self._log_event("worktree_created", {"feature_id": feature.id, "path": str(worktree)})
-            except WorktreeError as e:
-                feature.status = FeatureStatus.FAILED
-                feature.last_error = f"worktree creation failed: {e}"
-                feature.updated_at = datetime.now(UTC)
-                self._save_feature(feature, feature_dir)
-                self._log_event("feature_failed", {"feature_id": feature.id, "reason": str(e)})
-                return
-
-        result: McLoopResult = self.mcloop(
-            feature=feature,
-            workspace=worktree,
-            master_spec=self.bob_dir / "spec.md",
-            feature_dir=feature_dir,
-        )
-        self._log_event("mcloop_finished", {
-            "feature_id": feature.id,
-            "outcome": result.outcome,
-            "iterations": result.iterations,
-        })
-
-        if result.outcome != "exit_signal":
-            feature.status = FeatureStatus.FAILED
-            feature.last_error = result.last_reason
+        # Resume path: if feature is already MCLOOP_DONE, skip McLoop + worktree creation
+        # and go directly to Orchestra. Worktree should still be on disk from the prior run.
+        if feature.status != FeatureStatus.MCLOOP_DONE:
+            feature.status = FeatureStatus.IN_PROGRESS
             feature.updated_at = datetime.now(UTC)
             self._save_feature(feature, feature_dir)
-            self._log_event("feature_failed", {
+
+            # Create worktree if not already present. Both path and branch are
+            # handled idempotently by add_worktree (M2b), so retries after
+            # crash recovery work even if the branch was created in a prior run.
+            if not worktree.exists():
+                try:
+                    add_worktree(self.project_root, worktree, branch=branch_name)
+                    self._log_event("worktree_created", {"feature_id": feature.id, "path": str(worktree)})
+                except WorktreeError as e:
+                    feature.status = FeatureStatus.FAILED
+                    feature.last_error = f"worktree creation failed: {e}"
+                    feature.updated_at = datetime.now(UTC)
+                    self._save_feature(feature, feature_dir)
+                    self._log_event("feature_failed", {"feature_id": feature.id, "reason": str(e)})
+                    return
+
+            result: McLoopResult = self.mcloop(
+                feature=feature,
+                workspace=worktree,
+                master_spec=self.bob_dir / "spec.md",
+                feature_dir=feature_dir,
+            )
+            self._log_event("mcloop_finished", {
                 "feature_id": feature.id,
-                "reason": result.last_reason,
+                "outcome": result.outcome,
+                "iterations": result.iterations,
             })
-            # Worktree intentionally LEFT in place on failure so the user can inspect.
-            return
 
-        feature.status = FeatureStatus.MCLOOP_DONE
-        feature.updated_at = datetime.now(UTC)
-        self._save_feature(feature, feature_dir)
+            if result.outcome != "exit_signal":
+                feature.status = FeatureStatus.FAILED
+                feature.last_error = result.last_reason
+                feature.updated_at = datetime.now(UTC)
+                self._save_feature(feature, feature_dir)
+                self._log_event("feature_failed", {
+                    "feature_id": feature.id,
+                    "reason": result.last_reason,
+                })
+                # Worktree intentionally LEFT in place on failure so the user can inspect.
+                return
 
-        if is_shutdown_requested():
-            self._log_event("feature_paused_pre_orchestra", {"feature_id": feature.id})
-            return
+            feature.status = FeatureStatus.MCLOOP_DONE
+            feature.updated_at = datetime.now(UTC)
+            self._save_feature(feature, feature_dir)
 
+            if is_shutdown_requested():
+                self._log_event("feature_paused_pre_orchestra", {"feature_id": feature.id})
+                return
+        else:
+            self._log_event("feature_resumed_at_orchestra", {"feature_id": feature.id})
+
+        # ---- Orchestra (always runs; either fresh post-McLoop or resumed) ----
         self._set_cursor("orchestra", feature.id, run_id)
         verdict: Verdict = self.orchestra(
             feature=feature,
