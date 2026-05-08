@@ -252,11 +252,27 @@ class Coordinator:
         })
 
         if verdict.decision == "approve":
+            # Real git merge before declaring success.
+            merged, err = self._merge_to_main(branch_name)
+            if not merged:
+                feature.status = FeatureStatus.FAILED
+                feature.last_error = f"merge conflict on branch {branch_name}: {err[:500]}"
+                feature.updated_at = datetime.now(UTC)
+                self._save_feature(feature, feature_dir)
+                self._log_event("feature_merge_failed", {
+                    "feature_id": feature.id,
+                    "branch": branch_name,
+                    "reason": err[:500],
+                })
+                # Worktree and branch are LEFT in place for inspection.
+                return
+
             feature.status = FeatureStatus.MERGED
             feature.updated_at = datetime.now(UTC)
             self._save_feature(feature, feature_dir)
             self._log_event("feature_merged", {"feature_id": feature.id})
-            # Remove the worktree after a successful merge.
+
+            # Remove the worktree.
             try:
                 remove_worktree(self.project_root, worktree)
                 self._log_event("worktree_removed", {"feature_id": feature.id})
@@ -264,6 +280,14 @@ class Coordinator:
                 self._log_event("worktree_remove_failed", {
                     "feature_id": feature.id, "reason": str(e),
                 })
+
+            # Delete the branch (it's been merged into main).
+            import subprocess
+            subprocess.run(
+                ["git", "branch", "-d", branch_name],
+                cwd=str(self.project_root),
+                capture_output=True, text=True,
+            )
         else:
             feature.status = FeatureStatus.REJECTED
             feature.last_error = verdict.judge_reasoning
@@ -274,6 +298,37 @@ class Coordinator:
                 "reason": verdict.judge_reasoning,
             })
             # Worktree LEFT in place on rejection so user can debug.
+
+    def _merge_to_main(self, branch_name: str) -> tuple[bool, str]:
+        """Merge `branch_name` into main. Returns (success, error_message)."""
+        import subprocess
+
+        # Try fast-forward first (history was linear).
+        ff_result = subprocess.run(
+            ["git", "merge", "--ff-only", branch_name],
+            cwd=str(self.project_root),
+            capture_output=True, text=True,
+        )
+        if ff_result.returncode == 0:
+            return True, ""
+
+        # FF failed (probably history diverged). Try a no-ff merge.
+        nf_result = subprocess.run(
+            ["git", "merge", "--no-ff", "-m", f"Merge {branch_name}", branch_name],
+            cwd=str(self.project_root),
+            capture_output=True, text=True,
+        )
+        if nf_result.returncode == 0:
+            return True, ""
+
+        # Real conflict. Abort the in-progress merge so main is clean.
+        subprocess.run(
+            ["git", "merge", "--abort"],
+            cwd=str(self.project_root),
+            capture_output=True, text=True,
+        )
+        msg = (nf_result.stderr or nf_result.stdout or "merge failed").strip()
+        return False, msg
 
     def _save_feature(self, f: Feature, feature_dir: Path) -> None:
         write_json_atomic(feature_dir / "state.json", f.model_dump(mode="json"))
@@ -309,6 +364,8 @@ class Coordinator:
             return f"-> Feature {fid}: Orchestra {details.get('decision')} (confidence {conf:.2f})"
         if event == "feature_merged":
             return f"✓ Feature {fid}: merged"
+        if event == "feature_merge_failed":
+            return f"✗ Feature {fid}: merge to main failed — {details.get('reason', '')[:100]}"
         if event == "feature_failed":
             return f"✗ Feature {fid}: failed — {details.get('reason', '')}"
         if event == "feature_rejected":
