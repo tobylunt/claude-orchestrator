@@ -48,10 +48,18 @@ def add_worktree(repo: Path, target: Path, branch: str) -> None:
     If `branch` does not exist, it is created from the current HEAD of `repo`.
     If `branch` already exists, the worktree is attached to it (no -b flag).
     Either case, the resulting worktree is checked out at `branch`'s tip.
+
+    Stale worktree registrations (path missing but still listed by git)
+    are pruned automatically — this happens when a previous worktree was
+    deleted from disk without going through `git worktree remove`.
     """
     if target.exists():
         raise WorktreeError(f"worktree path already exists: {target}")
     target.parent.mkdir(parents=True, exist_ok=True)
+
+    # Prune any stale registrations (worktree paths that no longer exist on disk).
+    # This is safe: git worktree prune only removes registrations whose path is missing.
+    _run(["git", "worktree", "prune"], cwd=repo)
 
     if _branch_exists(repo, branch):
         cmd = ["git", "worktree", "add", str(target), branch]

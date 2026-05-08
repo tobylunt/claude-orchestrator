@@ -68,3 +68,30 @@ def test_add_worktree_attaches_to_existing_branch(repo: Path, tmp_path: Path):
     add_worktree(repo, target2, branch="bob/feat")
     assert target2.exists()
     assert (target2 / "README.md").exists()
+
+
+def test_add_worktree_handles_stale_registration(repo: Path, tmp_path: Path):
+    """If a previous worktree was registered but the directory was deleted,
+    add_worktree should prune the stale entry and proceed.
+    """
+    target = tmp_path / "wt" / "001-feat"
+    add_worktree(repo, target, branch="bob/feat")
+
+    # Simulate disk-cleanup: the directory is gone but git's registration remains.
+    import shutil
+    shutil.rmtree(target)
+    # The path is gone but `git worktree list` still has it registered:
+    worktrees = list_worktrees(repo)
+    assert any(wt.path == target for wt in worktrees), \
+        "test setup invalid: expected stale registration to remain after rmtree"
+
+    # add_worktree should succeed by pruning the stale entry first.
+    target2 = tmp_path / "wt" / "001-feat-retry"  # different path so registration mismatch
+    add_worktree(repo, target2, branch="bob/feat-retry")
+    assert target2.exists()
+
+    # AND it should also handle the case where the new target is the SAME path
+    # as the stale registration:
+    target_same = tmp_path / "wt" / "001-feat"  # back to original (currently registered as missing)
+    add_worktree(repo, target_same, branch="bob/feat-take2")
+    assert target_same.exists()
