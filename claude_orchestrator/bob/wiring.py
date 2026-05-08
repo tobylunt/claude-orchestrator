@@ -105,9 +105,25 @@ def build_coordinator(
     orchestra_obj = _build_orchestra()
 
     def duplo_callable():
-        spec = parse_markdown_spec(spec_path)
-        # M2 proper adds the meta-rubric LLM-as-judge check here; for M2a
-        # we trust the markdown author and pass it through.
+        if spec_path.is_dir():
+            # Multimodal path (M2): use real Duplo with Anthropic vision.
+            if os.environ.get("BOB_USE_STUB_DUPLO", "0") == "1":
+                # Offline mode: parse the markdown spec inside the directory if present.
+                md_in_dir = spec_path / "spec.md"
+                if md_in_dir.exists():
+                    spec = parse_markdown_spec(md_in_dir)
+                else:
+                    raise RuntimeError(
+                        f"BOB_USE_STUB_DUPLO=1 but no {md_in_dir} found"
+                    )
+            else:
+                from claude_orchestrator.bob.duplo.real import RealDuplo
+                from claude_orchestrator.bob.duplo.multimodal import AnthropicMultimodalClient
+                duplo = RealDuplo(multimodal=AnthropicMultimodalClient())
+                spec = duplo.elicit_from_directory(spec_path)
+        else:
+            # Single-file markdown path (M2a behavior preserved).
+            spec = parse_markdown_spec(spec_path)
         spec.rubric_meta_check_passed = True
         return spec
 

@@ -32,20 +32,24 @@ def _cmd_run(args: argparse.Namespace) -> int:
         print("error: --inputs is required (path to a markdown spec)", file=sys.stderr)
         return 2
     spec_path = Path(args.inputs).resolve()
-    if not spec_path.is_file():
+    if not spec_path.exists():
         print(f"error: input spec not found: {spec_path}", file=sys.stderr)
         return 2
-
-    # Pre-flight parse so malformed specs fail cleanly without acquiring the lock.
-    from claude_orchestrator.bob.duplo.markdown_parser import (
-        SpecParseError,
-        parse_markdown_spec,
-    )
-    try:
-        parse_markdown_spec(spec_path)
-    except SpecParseError as e:
-        print(f"spec error: {e}", file=sys.stderr)
-        return 4
+    if spec_path.is_file():
+        # Pre-flight parse so malformed markdown specs fail cleanly without acquiring the lock.
+        from claude_orchestrator.bob.duplo.markdown_parser import (
+            SpecParseError,
+            parse_markdown_spec,
+        )
+        try:
+            parse_markdown_spec(spec_path)
+        except SpecParseError as e:
+            print(f"spec error: {e}", file=sys.stderr)
+            return 4
+    elif not spec_path.is_dir():
+        print(f"error: --inputs must be a file or directory: {spec_path}", file=sys.stderr)
+        return 2
+    # Directory path: skip pre-flight (multimodal Duplo will produce the spec at run time).
 
     bob_dir = project_root / ".bob"
     install_handlers()
@@ -61,13 +65,21 @@ def _cmd_run(args: argparse.Namespace) -> int:
         return 3
     register_cleanup(lambda: release_lock(lock))
 
-    # Inputs dir: copy or symlink the markdown spec into .bob/inputs/ so it's
-    # captured for posterity. (M2 proper handles arbitrary multimodal inputs.)
+    # Inputs dir: capture for posterity.
     bob_dir.mkdir(parents=True, exist_ok=True)
     (bob_dir / "inputs").mkdir(exist_ok=True)
-    captured = bob_dir / "inputs" / spec_path.name
-    if captured.resolve() != spec_path.resolve():
-        captured.write_bytes(spec_path.read_bytes())
+    if spec_path.is_file():
+        captured = bob_dir / "inputs" / spec_path.name
+        if captured.resolve() != spec_path.resolve():
+            captured.write_bytes(spec_path.read_bytes())
+    else:
+        # Directory: copy each file under .bob/inputs/<dirname>/ for the audit trail.
+        import shutil
+        target_dir = bob_dir / "inputs" / spec_path.name
+        if target_dir.resolve() != spec_path.resolve():
+            if target_dir.exists():
+                shutil.rmtree(target_dir)
+            shutil.copytree(spec_path, target_dir)
 
     coord = build_coordinator(
         project_root=project_root,

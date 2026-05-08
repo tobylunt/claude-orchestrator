@@ -73,6 +73,38 @@ def test_build_coordinator_returns_callable_coordinator(tmp_path: Path, monkeypa
     assert len(spec.features) == 1
 
 
+def test_build_coordinator_handles_directory_inputs(tmp_path: Path, monkeypatch):
+    """When spec_path is a directory containing spec.md, BOB_USE_STUB_DUPLO=1 routes to markdown."""
+    import subprocess as sp
+    monkeypatch.setenv("BOB_USE_STUB_ORCHESTRA", "1")
+    monkeypatch.setenv("BOB_USE_STUB_DUPLO", "1")
+    sp.run(["git", "init", "-b", "main", str(tmp_path)], check=True)
+    (tmp_path / "README.md").write_text("hi\n")
+    sp.run(["git", "-C", str(tmp_path), "add", "."], check=True)
+    sp.run(
+        ["git", "-C", str(tmp_path), "-c", "user.email=t@t.com",
+         "-c", "user.name=T", "commit", "-m", "init"],
+        check=True,
+    )
+
+    inputs_dir = tmp_path / "inputs"
+    inputs_dir.mkdir()
+    (inputs_dir / "spec.md").write_text(
+        "# T\n## Motivation\nm\n## Features\n### F1: a\n"
+        "- task_type: library\n- verifier: python_pytest\n"
+        "- success_criteria:\n  - x\n- description: a\n"
+    )
+    coord = build_coordinator(
+        project_root=tmp_path,
+        spec_path=inputs_dir,
+        max_iterations=1,
+        disabled_gates={"post_duplo"},
+        claude_cmd="echo",
+    )
+    spec = coord.duplo()
+    assert spec.title == "T"
+
+
 def test_build_coordinator_uses_stub_when_env_set(tmp_path: Path, monkeypatch):
     """BOB_USE_STUB_ORCHESTRA=1 falls back to OrchestraStub (offline mode)."""
     monkeypatch.setenv("BOB_USE_STUB_ORCHESTRA", "1")
