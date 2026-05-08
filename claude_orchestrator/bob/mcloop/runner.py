@@ -29,6 +29,8 @@ else:
 
 from datetime import datetime
 
+from claude_orchestrator.bob.sandbox.executor import SubprocessExecutor
+from claude_orchestrator.bob.sandbox.host import HostExecutor
 from claude_orchestrator.bob.state_io import append_jsonl
 from claude_orchestrator.bob.verifiers.protocol import VerifyResult
 from claude_orchestrator.models import Feature
@@ -84,10 +86,12 @@ class McLoopRunner:
         claude_cmd: str = "claude",
         max_iterations: int = 30,
         per_iteration_timeout_s: int = 600,
+        executor: SubprocessExecutor | None = None,
     ) -> None:
         self.claude_cmd = claude_cmd
         self.max_iterations = max_iterations
         self.per_iteration_timeout_s = per_iteration_timeout_s
+        self.executor = executor or HostExecutor()
 
     def run(
         self,
@@ -103,15 +107,14 @@ class McLoopRunner:
 
         for i in range(1, self.max_iterations + 1):
             try:
-                proc = subprocess.run(
+                proc = self.executor.run(
                     [self.claude_cmd, "-p", prompt,
                      "--permission-mode", "bypassPermissions",
                      "--output-format", "stream-json",
                      "--include-partial-messages",
                      "--verbose"],
-                    cwd=str(workspace),
-                    capture_output=True,
-                    text=True,
+                    cwd=workspace,
+                    env=None,
                     timeout=self.per_iteration_timeout_s,
                 )
             except subprocess.TimeoutExpired:

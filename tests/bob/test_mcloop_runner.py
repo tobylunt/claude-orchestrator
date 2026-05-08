@@ -353,3 +353,44 @@ def test_runner_logs_each_iteration_separately(tmp_path: Path):
 
     assert (feature_dir / "iter-1.log").exists()
     assert (feature_dir / "iter-2.log").exists()
+
+
+def test_runner_uses_injected_executor(tmp_path: Path):
+    """McLoopRunner uses the injected executor (sandbox tier dispatch)."""
+    feature = _feature()
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    feature_dir = tmp_path / ".bob" / "features" / "001-t"
+    feature_dir.mkdir(parents=True)
+    (feature_dir / "spec.md").write_text("")
+    (feature_dir / "activity.md").write_text("")
+    (feature_dir / "failed_attempts.md").write_text("")
+    (feature_dir / "verifier-results.jsonl").write_text("")
+    master_spec = tmp_path / ".bob" / "spec.md"
+    master_spec.write_text("")
+
+    class FakeExecutor:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, cmd, *, cwd, env, timeout):
+            self.calls.append({"cmd": cmd, "cwd": cwd, "env": env, "timeout": timeout})
+            from subprocess import CompletedProcess
+            return CompletedProcess(cmd, 0, stdout="<promise>EXIT_SIGNAL</promise>", stderr="")
+
+    fake = FakeExecutor()
+    verifier = FakeVerifier([
+        VerifyResult(status="ok", reason="", artifacts=[], coverage_notes=None),
+    ])
+    runner = McLoopRunner(
+        claude_cmd="claude", max_iterations=1, per_iteration_timeout_s=10,
+        executor=fake,
+    )
+    runner.run(
+        feature=feature, workspace=workspace,
+        master_spec=master_spec, feature_dir=feature_dir, verifier=verifier,
+    )
+
+    assert len(fake.calls) == 1
+    assert fake.calls[0]["cmd"][0] == "claude"
+    assert fake.calls[0]["cwd"] == workspace
