@@ -7,6 +7,7 @@ Invoked via `python -m claude_orchestrator.bob.cli` or as `bob`
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -81,11 +82,17 @@ def _cmd_run(args: argparse.Namespace) -> int:
                 shutil.rmtree(target_dir)
             shutil.copytree(spec_path, target_dir)
 
+    sandbox_tier = (
+        args.sandbox
+        or os.environ.get("BOB_SANDBOX_TIER")
+        or "host"
+    )
     coord = build_coordinator(
         project_root=project_root,
         spec_path=spec_path,
         max_iterations=args.max_iterations,
         disabled_gates=set(args.no_gate),
+        sandbox_tier=sandbox_tier,
     )
     coord.run(RunScope(includes_duplo=True))
     return 0
@@ -155,6 +162,12 @@ def build_parser() -> argparse.ArgumentParser:
                      help="optional USD cap (advisory in subscription mode)")
     run.add_argument("--no-gate", action="append", default=[],
                      help="disable a HITL gate by name (repeatable)")
+    run.add_argument(
+        "--sandbox",
+        choices=["host", "docker"],
+        default=None,  # None means "fall back to env var or default"
+        help="sandbox tier (default: host; or BOB_SANDBOX_TIER env var)",
+    )
     run.set_defaults(func=_cmd_run)
 
     status = sub.add_parser("status", help="show current Bob state")

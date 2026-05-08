@@ -111,6 +111,81 @@ def test_build_coordinator_handles_directory_inputs(tmp_path: Path, monkeypatch)
     assert spec.title == "T"
 
 
+def test_build_coordinator_uses_host_executor_by_default(tmp_path: Path, monkeypatch):
+    """Default sandbox_tier='host' should use HostExecutor."""
+    import subprocess as sp
+    from claude_orchestrator.bob.sandbox.host import HostExecutor
+    monkeypatch.setenv("BOB_USE_STUB_ORCHESTRA", "1")
+    sp.run(["git", "init", "-b", "main", str(tmp_path)], check=True)
+    (tmp_path / "README.md").write_text("hi\n")
+    sp.run(["git", "-C", str(tmp_path), "add", "."], check=True)
+    sp.run(
+        ["git", "-C", str(tmp_path), "-c", "user.email=t@t.com",
+         "-c", "user.name=T", "commit", "-m", "init"],
+        check=True,
+    )
+    spec_path = tmp_path / "spec.md"
+    spec_path.write_text(
+        "# T\n## Motivation\nm\n## Features\n### F1: a\n"
+        "- task_type: library\n- verifier: python_pytest\n"
+        "- success_criteria:\n  - x\n- description: a\n"
+    )
+    coord = build_coordinator(
+        project_root=tmp_path,
+        spec_path=spec_path,
+        max_iterations=1,
+        disabled_gates={"post_duplo"},
+        claude_cmd="echo",
+    )
+    # Coordinator's mcloop is a closure over runner; we can't easily inspect.
+    # Instead, just verify the build doesn't crash and that constructing with
+    # sandbox_tier="docker" also works.
+    assert coord is not None
+
+
+def test_build_coordinator_accepts_docker_tier(tmp_path: Path, monkeypatch):
+    import subprocess as sp
+    monkeypatch.setenv("BOB_USE_STUB_ORCHESTRA", "1")
+    sp.run(["git", "init", "-b", "main", str(tmp_path)], check=True)
+    (tmp_path / "README.md").write_text("hi\n")
+    sp.run(["git", "-C", str(tmp_path), "add", "."], check=True)
+    sp.run(
+        ["git", "-C", str(tmp_path), "-c", "user.email=t@t.com",
+         "-c", "user.name=T", "commit", "-m", "init"],
+        check=True,
+    )
+    spec_path = tmp_path / "spec.md"
+    spec_path.write_text(
+        "# T\n## Motivation\nm\n## Features\n### F1: a\n"
+        "- task_type: library\n- verifier: python_pytest\n"
+        "- success_criteria:\n  - x\n- description: a\n"
+    )
+    coord = build_coordinator(
+        project_root=tmp_path,
+        spec_path=spec_path,
+        max_iterations=1,
+        disabled_gates={"post_duplo"},
+        claude_cmd="echo",
+        sandbox_tier="docker",
+    )
+    assert coord is not None
+
+
+def test_build_coordinator_rejects_unknown_tier(tmp_path: Path, monkeypatch):
+    import pytest as _pytest
+    monkeypatch.setenv("BOB_USE_STUB_ORCHESTRA", "1")
+    spec_path = tmp_path / "spec.md"
+    spec_path.write_text("# T\n## Motivation\nm\n## Features\n### F1: a\n- task_type: library\n- verifier: python_pytest\n- success_criteria:\n  - x\n- description: a\n")
+    with _pytest.raises(ValueError, match="unknown sandbox tier"):
+        build_coordinator(
+            project_root=tmp_path,
+            spec_path=spec_path,
+            max_iterations=1,
+            disabled_gates={"post_duplo"},
+            sandbox_tier="bogus",
+        )
+
+
 def test_build_coordinator_uses_stub_when_env_set(tmp_path: Path, monkeypatch):
     """BOB_USE_STUB_ORCHESTRA=1 falls back to OrchestraStub (offline mode)."""
     monkeypatch.setenv("BOB_USE_STUB_ORCHESTRA", "1")

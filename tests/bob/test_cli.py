@@ -102,6 +102,17 @@ def test_orchestrate_bob_validate_succeeds_on_valid_spec(tmp_path: Path):
     assert "1 feature" in result.stdout.lower()
 
 
+def test_orchestrate_bob_run_help_mentions_sandbox():
+    result = subprocess.run(
+        [sys.executable, "-m", "claude_orchestrator.bob.cli", "run", "--help"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0
+    assert "--sandbox" in result.stdout
+    assert "host" in result.stdout
+    assert "docker" in result.stdout
+
+
 def test_orchestrate_bob_validate_fails_on_malformed_spec(tmp_path: Path):
     """`bob validate` reports parse errors with non-zero exit code."""
     spec = tmp_path / "spec.md"

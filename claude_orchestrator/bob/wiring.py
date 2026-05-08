@@ -90,6 +90,20 @@ def build_verifier_registry() -> VerifierRegistry:
     return reg
 
 
+def _build_executor(tier: str):
+    """Construct the right SubprocessExecutor for the given sandbox tier."""
+    if tier == "host":
+        from claude_orchestrator.bob.sandbox.host import HostExecutor
+        return HostExecutor()
+    if tier == "docker":
+        from claude_orchestrator.bob.sandbox.docker import DockerExecutor
+        image = os.environ.get("BOB_DOCKER_IMAGE", "python:3.10-slim")
+        cpus = float(os.environ.get("BOB_DOCKER_CPUS", "4"))
+        memory = os.environ.get("BOB_DOCKER_MEMORY", "8g")
+        return DockerExecutor(image=image, cpus=cpus, memory=memory)
+    raise ValueError(f"unknown sandbox tier: {tier!r} (must be host|docker)")
+
+
 def build_coordinator(
     *,
     project_root: Path,
@@ -98,16 +112,19 @@ def build_coordinator(
     per_iteration_timeout_s: int = 600,
     disabled_gates: set[str] | None = None,
     claude_cmd: str = "claude",
+    sandbox_tier: str = "host",  # "host" | "docker"
 ) -> Coordinator:
     """Assemble a Coordinator from a project root + markdown spec path.
 
     The returned Coordinator is ready to call .run(RunScope(includes_duplo=True)).
     """
     registry = build_verifier_registry()
+    executor = _build_executor(sandbox_tier)
     runner = McLoopRunner(
         claude_cmd=claude_cmd,
         max_iterations=max_iterations,
         per_iteration_timeout_s=per_iteration_timeout_s,
+        executor=executor,
     )
     orchestra_obj = _build_orchestra()
 
