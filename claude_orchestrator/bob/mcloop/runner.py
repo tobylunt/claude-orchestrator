@@ -121,6 +121,18 @@ class McLoopRunner:
 
             stdout = proc.stdout
 
+            # Persist stdout + stderr for debugging.
+            log_path = feature_dir / f"iter-{i}.log"
+            log_content_parts = []
+            if proc.stdout:
+                log_content_parts.append("=== STDOUT ===")
+                log_content_parts.append(proc.stdout)
+            if proc.stderr:
+                log_content_parts.append("\n=== STDERR ===")
+                log_content_parts.append(proc.stderr)
+            if log_content_parts:
+                log_path.write_text("\n".join(log_content_parts))
+
             verify_result = verifier.verify(workspace, feature)
             append_jsonl(verifier_log, {
                 "iteration": i,

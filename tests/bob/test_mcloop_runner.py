@@ -239,3 +239,77 @@ def test_runner_passes_permission_bypass_flag(tmp_path: Path, monkeypatch):
     assert "--permission-mode" in args, f"missing permission flag in: {args}"
     idx = args.index("--permission-mode")
     assert args[idx + 1] == "bypassPermissions"
+
+
+def test_runner_persists_per_iteration_log(tmp_path: Path):
+    """Each iteration's claude stdout+stderr should be written to a per-iter log file."""
+    feature = _feature()
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    feature_dir = tmp_path / ".bob" / "features" / "001-t"
+    feature_dir.mkdir(parents=True)
+    (feature_dir / "spec.md").write_text("")
+    (feature_dir / "activity.md").write_text("")
+    (feature_dir / "failed_attempts.md").write_text("")
+    (feature_dir / "verifier-results.jsonl").write_text("")
+    master_spec = tmp_path / ".bob" / "spec.md"
+    master_spec.write_text("")
+
+    fake_claude = tmp_path / "claude"
+    fake_claude.write_text(
+        "#!/bin/sh\necho 'agent thinking out loud'\necho 'error message' 1>&2\n"
+        "echo '<promise>EXIT_SIGNAL</promise>'\n"
+    )
+    fake_claude.chmod(0o755)
+
+    verifier = FakeVerifier([
+        VerifyResult(status="ok", reason="green", artifacts=[], coverage_notes=None),
+    ])
+    runner = McLoopRunner(claude_cmd=str(fake_claude), max_iterations=1,
+                         per_iteration_timeout_s=10)
+    runner.run(
+        feature=feature, workspace=workspace,
+        master_spec=master_spec, feature_dir=feature_dir, verifier=verifier,
+    )
+
+    # iter-1.log must exist and contain the captured stdout AND stderr.
+    log_path = feature_dir / "iter-1.log"
+    assert log_path.exists(), f"per-iteration log missing: {log_path}"
+    log = log_path.read_text()
+    assert "agent thinking out loud" in log
+    assert "error message" in log
+    assert "<promise>EXIT_SIGNAL</promise>" in log
+
+
+def test_runner_logs_each_iteration_separately(tmp_path: Path):
+    """Multiple iterations produce iter-1.log, iter-2.log, etc."""
+    feature = _feature()
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    feature_dir = tmp_path / ".bob" / "features" / "001-t"
+    feature_dir.mkdir(parents=True)
+    (feature_dir / "spec.md").write_text("")
+    (feature_dir / "activity.md").write_text("")
+    (feature_dir / "failed_attempts.md").write_text("")
+    (feature_dir / "verifier-results.jsonl").write_text("")
+    master_spec = tmp_path / ".bob" / "spec.md"
+    master_spec.write_text("")
+
+    fake_claude = tmp_path / "claude"
+    # Always emits something but never EXIT_SIGNAL — forces 2 iterations.
+    fake_claude.write_text("#!/bin/sh\necho 'iter ran'\n")
+    fake_claude.chmod(0o755)
+
+    verifier = FakeVerifier([
+        VerifyResult(status="fail", reason="r", artifacts=[], coverage_notes=None),
+        VerifyResult(status="fail", reason="r", artifacts=[], coverage_notes=None),
+    ])
+    runner = McLoopRunner(claude_cmd=str(fake_claude), max_iterations=2,
+                         per_iteration_timeout_s=10)
+    runner.run(
+        feature=feature, workspace=workspace,
+        master_spec=master_spec, feature_dir=feature_dir, verifier=verifier,
+    )
+
+    assert (feature_dir / "iter-1.log").exists()
+    assert (feature_dir / "iter-2.log").exists()
