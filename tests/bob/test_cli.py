@@ -3,6 +3,7 @@
 These tests don't run real Claude — they exercise argument parsing and
 verify the run command dispatches with the right config.
 """
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -140,11 +141,13 @@ def test_orchestrate_bob_vroom_help():
 
 def test_orchestrate_bob_vroom_now_smoke(tmp_path: Path):
     """`bob vroom now` should run one cycle and exit."""
+    env = {**os.environ, "BOB_USE_STUB_VROOM": "1"}
     result = subprocess.run(
         [sys.executable, "-m", "claude_orchestrator.bob.cli", "vroom", "now",
          "--project", str(tmp_path)],
         capture_output=True, text=True,
         timeout=60,
+        env=env,
     )
     assert result.returncode == 0
     assert "vroom cycle complete" in result.stdout.lower() or "0 raw findings" in result.stdout

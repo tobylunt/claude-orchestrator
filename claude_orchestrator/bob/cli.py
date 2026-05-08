@@ -179,10 +179,6 @@ def _cmd_vroom_start(args: argparse.Namespace) -> int:
     from claude_orchestrator.bob.vroom.coalescer import coalesce_findings
     from claude_orchestrator.bob.vroom.daemon import VroomDaemon
     from claude_orchestrator.bob.vroom.auditors.semgrep import SemgrepAuditor
-    from claude_orchestrator.bob.vroom.auditors.llm_stubs import (
-        ClaudeArchitectAuditorStub,
-        CodexSecurityAuditorStub,
-    )
 
     project_root = Path(args.project).resolve()
     if not project_root.exists():
@@ -191,10 +187,31 @@ def _cmd_vroom_start(args: argparse.Namespace) -> int:
 
     install_handlers()
 
+    use_stub = os.environ.get("BOB_USE_STUB_VROOM", "0") == "1"
+    if use_stub:
+        from claude_orchestrator.bob.vroom.auditors.llm_stubs import (
+            CodexSecurityAuditorStub,
+        )
+
+        class _ClaudeStub:
+            id = "claude_architect"
+
+            def triggers_on(self, changed_files):
+                return True
+
+            def audit(self, workspace, changed_files):
+                return []
+
+        claude_aud = _ClaudeStub()
+    else:
+        from claude_orchestrator.bob.vroom.auditors.claude_architect import ClaudeArchitectAuditor
+        claude_aud = ClaudeArchitectAuditor()
+
+    from claude_orchestrator.bob.vroom.auditors.llm_stubs import CodexSecurityAuditorStub
     pool = AuditorPool([
         SemgrepAuditor(),
-        ClaudeArchitectAuditorStub(),
-        CodexSecurityAuditorStub(),
+        claude_aud,
+        CodexSecurityAuditorStub(),  # M4 Task 2 replaces this
     ])
 
     def audit_cycle():
@@ -252,16 +269,30 @@ def _cmd_vroom_now(args: argparse.Namespace) -> int:
     from claude_orchestrator.bob.vroom.auditor_pool import AuditorPool
     from claude_orchestrator.bob.vroom.coalescer import coalesce_findings
     from claude_orchestrator.bob.vroom.auditors.semgrep import SemgrepAuditor
-    from claude_orchestrator.bob.vroom.auditors.llm_stubs import (
-        ClaudeArchitectAuditorStub,
-        CodexSecurityAuditorStub,
-    )
 
     project_root = Path(args.project).resolve()
+
+    use_stub = os.environ.get("BOB_USE_STUB_VROOM", "0") == "1"
+    if use_stub:
+        class _ClaudeStub:
+            id = "claude_architect"
+
+            def triggers_on(self, changed_files):
+                return True
+
+            def audit(self, workspace, changed_files):
+                return []
+
+        claude_aud = _ClaudeStub()
+    else:
+        from claude_orchestrator.bob.vroom.auditors.claude_architect import ClaudeArchitectAuditor
+        claude_aud = ClaudeArchitectAuditor()
+
+    from claude_orchestrator.bob.vroom.auditors.llm_stubs import CodexSecurityAuditorStub
     pool = AuditorPool([
         SemgrepAuditor(),
-        ClaudeArchitectAuditorStub(),
-        CodexSecurityAuditorStub(),
+        claude_aud,
+        CodexSecurityAuditorStub(),  # M4 Task 2 replaces this
     ])
     findings = pool.run(workspace=project_root, changed_files=[])
     clusters = coalesce_findings(findings)
