@@ -16,6 +16,17 @@ dev = [
     "pytest",
     "pytest-asyncio",
 ]
+m2 = [
+    "autogen-agentchat>=0.4",
+    "scipy>=1.13",
+    "pandera>=0.20",
+    "hypothesis>=6.100",
+    "papermill>=2.6",
+    "shapely>=2.0",
+    "pyproj>=3.6",
+    "anthropic>=0.40",
+    "openai>=1.50",
+]
 
 [project.scripts]
 orchestrate = "claude_orchestrator.cli:cli_entry"
