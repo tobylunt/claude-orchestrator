@@ -394,3 +394,129 @@ def test_runner_uses_injected_executor(tmp_path: Path):
     assert len(fake.calls) == 1
     assert fake.calls[0]["cmd"][0] == "claude"
     assert fake.calls[0]["cwd"] == workspace
+
+
+def test_runner_yolo_mode_continues_on_first_inconclusive(tmp_path: Path):
+    """In YOLO mode, an Inconclusive should not halt the loop on the first hit."""
+    from claude_orchestrator.bob.yolo import YoloConfig
+    feature = _feature()
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    feature_dir = tmp_path / ".bob" / "features" / "001-t"
+    feature_dir.mkdir(parents=True)
+    (feature_dir / "spec.md").write_text("")
+    (feature_dir / "activity.md").write_text("")
+    (feature_dir / "failed_attempts.md").write_text("")
+    (feature_dir / "verifier-results.jsonl").write_text("")
+    master_spec = tmp_path / ".bob" / "spec.md"
+    master_spec.write_text("")
+
+    fake_claude = tmp_path / "claude"
+    fake_claude.write_text("#!/bin/sh\necho ok\n")
+    fake_claude.chmod(0o755)
+
+    # First two iterations: inconclusive. Third: ok with EXIT_SIGNAL.
+    verifier = FakeVerifier([
+        VerifyResult(status="inconclusive", reason="missing tests", artifacts=[], coverage_notes="add tests"),
+        VerifyResult(status="inconclusive", reason="still missing", artifacts=[], coverage_notes="add tests"),
+        VerifyResult(status="ok", reason="green", artifacts=[], coverage_notes=None),
+    ])
+
+    yolo = YoloConfig(enabled=True, sandbox_tier="docker", max_cost=10.0,
+                     max_inconclusive=3)
+
+    # On the 3rd iteration, claude needs to emit EXIT_SIGNAL since verifier returns ok.
+    fake_claude_exit = tmp_path / "claude_exit"
+    fake_claude_exit.write_text(
+        '#!/bin/sh\necho "<promise>EXIT_SIGNAL</promise>"\n'
+    )
+    fake_claude_exit.chmod(0o755)
+
+    # We need a fake claude that emits EXIT_SIGNAL only on iteration 3. Simplest:
+    # always emit EXIT_SIGNAL; the runner only treats it as exit when verifier == ok.
+    runner = McLoopRunner(
+        claude_cmd=str(fake_claude_exit), max_iterations=5,
+        per_iteration_timeout_s=10,
+        yolo=yolo,
+    )
+    result = runner.run(
+        feature=feature, workspace=workspace,
+        master_spec=master_spec, feature_dir=feature_dir, verifier=verifier,
+    )
+    assert result.outcome == "exit_signal"
+    assert result.iterations == 3  # ran past 2 inconclusives
+
+
+def test_runner_yolo_mode_halts_after_max_inconclusive(tmp_path: Path):
+    """After max_inconclusive consecutive Inconclusives, YOLO halts loud."""
+    from claude_orchestrator.bob.yolo import YoloConfig
+    feature = _feature()
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    feature_dir = tmp_path / ".bob" / "features" / "001-t"
+    feature_dir.mkdir(parents=True)
+    (feature_dir / "spec.md").write_text("")
+    (feature_dir / "activity.md").write_text("")
+    (feature_dir / "failed_attempts.md").write_text("")
+    (feature_dir / "verifier-results.jsonl").write_text("")
+    master_spec = tmp_path / ".bob" / "spec.md"
+    master_spec.write_text("")
+
+    fake_claude = tmp_path / "claude"
+    fake_claude.write_text("#!/bin/sh\necho ok\n")
+    fake_claude.chmod(0o755)
+
+    # All inconclusive; YOLO max=2, so after 2 in a row the loop halts.
+    verifier = FakeVerifier([
+        VerifyResult(status="inconclusive", reason="r1", artifacts=[], coverage_notes=None),
+        VerifyResult(status="inconclusive", reason="r2", artifacts=[], coverage_notes=None),
+        VerifyResult(status="inconclusive", reason="r3", artifacts=[], coverage_notes=None),  # not reached
+    ])
+
+    yolo = YoloConfig(enabled=True, sandbox_tier="docker", max_cost=10.0,
+                     max_inconclusive=2)
+
+    runner = McLoopRunner(
+        claude_cmd=str(fake_claude), max_iterations=5,
+        per_iteration_timeout_s=10,
+        yolo=yolo,
+    )
+    result = runner.run(
+        feature=feature, workspace=workspace,
+        master_spec=master_spec, feature_dir=feature_dir, verifier=verifier,
+    )
+    assert result.outcome == "halted_inconclusive"
+    assert result.iterations == 2  # halted at the 2nd consecutive
+
+
+def test_runner_default_mode_still_halts_on_first_inconclusive(tmp_path: Path):
+    """Without YOLO, first Inconclusive halts loud (M2.2 behavior preserved)."""
+    feature = _feature()
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    feature_dir = tmp_path / ".bob" / "features" / "001-t"
+    feature_dir.mkdir(parents=True)
+    (feature_dir / "spec.md").write_text("")
+    (feature_dir / "activity.md").write_text("")
+    (feature_dir / "failed_attempts.md").write_text("")
+    (feature_dir / "verifier-results.jsonl").write_text("")
+    master_spec = tmp_path / ".bob" / "spec.md"
+    master_spec.write_text("")
+
+    fake_claude = tmp_path / "claude"
+    fake_claude.write_text("#!/bin/sh\necho ok\n")
+    fake_claude.chmod(0o755)
+
+    verifier = FakeVerifier([
+        VerifyResult(status="inconclusive", reason="halt me", artifacts=[], coverage_notes=None),
+    ])
+    runner = McLoopRunner(
+        claude_cmd=str(fake_claude), max_iterations=5,
+        per_iteration_timeout_s=10,
+    )  # no yolo
+    result = runner.run(
+        feature=feature, workspace=workspace,
+        master_spec=master_spec, feature_dir=feature_dir, verifier=verifier,
+    )
+    assert result.outcome == "halted_inconclusive"
+    assert result.iterations == 1  # halted on first

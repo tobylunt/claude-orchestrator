@@ -127,6 +127,7 @@ def build_coordinator(
         max_iterations=max_iterations,
         per_iteration_timeout_s=per_iteration_timeout_s,
         executor=executor,
+        yolo=yolo,
     )
     orchestra_obj = _build_orchestra()
 

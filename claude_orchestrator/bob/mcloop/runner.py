@@ -19,7 +19,10 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
+
+if TYPE_CHECKING:
+    from claude_orchestrator.bob.yolo import YoloConfig
 
 if sys.version_info >= (3, 11):
     from datetime import UTC
@@ -87,11 +90,13 @@ class McLoopRunner:
         max_iterations: int = 30,
         per_iteration_timeout_s: int = 600,
         executor: SubprocessExecutor | None = None,
+        yolo: "YoloConfig | None" = None,  # NEW
     ) -> None:
         self.claude_cmd = claude_cmd
         self.max_iterations = max_iterations
         self.per_iteration_timeout_s = per_iteration_timeout_s
         self.executor = executor or HostExecutor()
+        self.yolo = yolo
 
     def run(
         self,
@@ -104,6 +109,7 @@ class McLoopRunner:
     ) -> McLoopResult:
         prompt = _render_prompt(feature, master_spec, feature_dir)
         verifier_log = feature_dir / "verifier-results.jsonl"
+        consecutive_inconclusive = 0  # NEW
 
         for i in range(1, self.max_iterations + 1):
             try:
@@ -148,12 +154,33 @@ class McLoopRunner:
             })
 
             if verify_result.status == "inconclusive":
-                return McLoopResult(
-                    outcome="halted_inconclusive",
-                    iterations=i,
-                    last_reason=verify_result.reason,
-                    last_status=verify_result.status,
-                )
+                consecutive_inconclusive += 1
+                yolo_active = self.yolo is not None and self.yolo.enabled
+                if not yolo_active:
+                    # Default mode: halt loud on first Inconclusive.
+                    return McLoopResult(
+                        outcome="halted_inconclusive",
+                        iterations=i,
+                        last_reason=verify_result.reason,
+                        last_status=verify_result.status,
+                    )
+                # YOLO mode: bounded feedback. Halt only if we've hit the consecutive cap.
+                if consecutive_inconclusive >= self.yolo.max_inconclusive:
+                    return McLoopResult(
+                        outcome="halted_inconclusive",
+                        iterations=i,
+                        last_reason=(
+                            f"YOLO halted after {consecutive_inconclusive} consecutive "
+                            f"Inconclusives (max={self.yolo.max_inconclusive}): "
+                            f"{verify_result.reason}"
+                        ),
+                        last_status=verify_result.status,
+                    )
+                # Else: continue to next iteration. The verifier's reason becomes
+                # context for the agent's next pass via the iter log.
+            else:
+                # Reset the counter on any non-inconclusive verifier result.
+                consecutive_inconclusive = 0
 
             if _HALT_PROMISE_RE.search(stdout):
                 return McLoopResult(
