@@ -10,15 +10,61 @@ import argparse
 import sys
 from pathlib import Path
 
-from claude_orchestrator.bob.signals import install_handlers
 from claude_orchestrator.bob.state_io import read_json
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
-    install_handlers()
+    from claude_orchestrator.bob.coordinator import RunScope
+    from claude_orchestrator.bob.process_lock import (
+        Lock, LockHeld, StalePidDetected, acquire_lock, release_lock,
+    )
+    from claude_orchestrator.bob.signals import (
+        install_handlers, register_cleanup,
+    )
+    from claude_orchestrator.bob.wiring import build_coordinator
+
     project_root = Path(args.project).resolve()
-    print(f"bob run on {project_root} (max_iterations={args.max_iterations})")
-    print("M1: full run wiring is the integration test; see Task 18.")
+    if not project_root.exists():
+        print(f"error: project root not found: {project_root}", file=sys.stderr)
+        return 2
+
+    if not args.inputs:
+        print("error: --inputs is required (path to a markdown spec)", file=sys.stderr)
+        return 2
+    spec_path = Path(args.inputs).resolve()
+    if not spec_path.is_file():
+        print(f"error: input spec not found: {spec_path}", file=sys.stderr)
+        return 2
+
+    bob_dir = project_root / ".bob"
+    install_handlers()
+
+    # Acquire single-instance lock; release on shutdown.
+    try:
+        lock: Lock = acquire_lock(bob_dir)
+    except LockHeld as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 3
+    except StalePidDetected as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 3
+    register_cleanup(lambda: release_lock(lock))
+
+    # Inputs dir: copy or symlink the markdown spec into .bob/inputs/ so it's
+    # captured for posterity. (M2 proper handles arbitrary multimodal inputs.)
+    bob_dir.mkdir(parents=True, exist_ok=True)
+    (bob_dir / "inputs").mkdir(exist_ok=True)
+    captured = bob_dir / "inputs" / spec_path.name
+    if captured.resolve() != spec_path.resolve():
+        captured.write_bytes(spec_path.read_bytes())
+
+    coord = build_coordinator(
+        project_root=project_root,
+        spec_path=spec_path,
+        max_iterations=args.max_iterations,
+        disabled_gates=set(args.no_gate),
+    )
+    coord.run(RunScope(includes_duplo=True))
     return 0
 
 

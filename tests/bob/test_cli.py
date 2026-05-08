@@ -43,3 +43,25 @@ def test_orchestrate_bob_status_on_initialized(tmp_path: Path):
     )
     assert result.returncode == 0
     assert "idle" in result.stdout
+
+
+def test_orchestrate_bob_run_requires_inputs(tmp_path: Path):
+    """`bob run` without --inputs should exit with a clear error."""
+    result = subprocess.run(
+        [sys.executable, "-m", "claude_orchestrator.bob.cli", "run",
+         "--project", str(tmp_path)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode != 0
+    assert "inputs" in result.stderr.lower() or "inputs" in result.stdout.lower()
+
+
+def test_orchestrate_bob_run_rejects_missing_spec(tmp_path: Path):
+    result = subprocess.run(
+        [sys.executable, "-m", "claude_orchestrator.bob.cli", "run",
+         "--project", str(tmp_path),
+         "--inputs", str(tmp_path / "does-not-exist.md")],
+        capture_output=True, text=True,
+    )
+    assert result.returncode != 0
+    assert "not found" in (result.stderr + result.stdout).lower()
