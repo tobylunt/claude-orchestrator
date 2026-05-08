@@ -172,7 +172,9 @@ class Coordinator:
         worktree = self.bob_dir / "worktrees" / _feature_dirname(feature)
         branch_name = f"bob/{_feature_dirname(feature)}"
 
-        # Create worktree if not already present (idempotent for retries).
+        # Create worktree if not already present. Both path and branch are
+        # handled idempotently by add_worktree (M2b), so retries after
+        # crash recovery work even if the branch was created in a prior run.
         if not worktree.exists():
             try:
                 add_worktree(self.project_root, worktree, branch=branch_name)

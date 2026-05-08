@@ -54,3 +54,17 @@ def test_add_worktree_rejects_existing_path(repo: Path, tmp_path: Path):
     add_worktree(repo, target, branch="bob/001-auth")
     with pytest.raises(WorktreeError):
         add_worktree(repo, target, branch="bob/001-other")
+
+
+def test_add_worktree_attaches_to_existing_branch(repo: Path, tmp_path: Path):
+    """add_worktree should succeed if the branch already exists in the repo."""
+    target1 = tmp_path / "wt1"
+    add_worktree(repo, target1, branch="bob/feat")
+    # Remove the worktree but keep the branch.
+    remove_worktree(repo, target1)
+
+    # Now the branch exists with no worktree. Add a new worktree on the same branch.
+    target2 = tmp_path / "wt2"
+    add_worktree(repo, target2, branch="bob/feat")
+    assert target2.exists()
+    assert (target2 / "README.md").exists()

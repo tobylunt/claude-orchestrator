@@ -33,18 +33,32 @@ def _run(cmd: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
-def add_worktree(repo: Path, target: Path, branch: str) -> None:
-    """Create a new worktree at `target` on a fresh branch `branch`.
+def _branch_exists(repo: Path, branch: str) -> bool:
+    """Check whether `branch` exists locally in `repo`."""
+    result = _run(
+        ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
+        cwd=repo,
+    )
+    return result.returncode == 0
 
-    The branch is created from the current HEAD of `repo`.
+
+def add_worktree(repo: Path, target: Path, branch: str) -> None:
+    """Create a new worktree at `target` on `branch`.
+
+    If `branch` does not exist, it is created from the current HEAD of `repo`.
+    If `branch` already exists, the worktree is attached to it (no -b flag).
+    Either case, the resulting worktree is checked out at `branch`'s tip.
     """
     if target.exists():
         raise WorktreeError(f"worktree path already exists: {target}")
     target.parent.mkdir(parents=True, exist_ok=True)
-    result = _run(
-        ["git", "worktree", "add", "-b", branch, str(target)],
-        cwd=repo,
-    )
+
+    if _branch_exists(repo, branch):
+        cmd = ["git", "worktree", "add", str(target), branch]
+    else:
+        cmd = ["git", "worktree", "add", "-b", branch, str(target)]
+
+    result = _run(cmd, cwd=repo)
     if result.returncode != 0:
         raise WorktreeError(
             f"git worktree add failed: {result.stderr.strip()}"
