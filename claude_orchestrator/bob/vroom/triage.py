@@ -9,9 +9,20 @@ are suppressed from active triage but persist in findings.jsonl).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from claude_orchestrator.bob.vroom.coalescer import FindingCluster
+
+if TYPE_CHECKING:
+    from claude_orchestrator.bob.yolo import YoloConfig
+
+_SEVERITY_RANK = {
+    "info": 0,
+    "low": 1,
+    "medium": 2,
+    "high": 3,
+    "critical": 4,
+}
 
 
 @dataclass(frozen=True)
@@ -34,12 +45,35 @@ class VroomTriageGate:
 
     name = "vroom_triage"
 
-    def __init__(self, *, min_consensus: int = 2) -> None:
+    def __init__(
+        self,
+        *,
+        min_consensus: int = 2,
+        yolo: "YoloConfig | None" = None,
+    ) -> None:
         self.min_consensus = min_consensus
+        self.yolo = yolo
 
     def run(self, clusters: list[FindingCluster]) -> list[TriageDecision]:
         eligible = triage_clusters(clusters, min_consensus=self.min_consensus)
         decisions: list[TriageDecision] = []
+
+        # YOLO mode: auto-decide based on severity threshold.
+        if self.yolo is not None and self.yolo.enabled:
+            threshold_rank = _SEVERITY_RANK[self.yolo.vroom_severity]
+            for c in eligible:
+                cluster_rank = _SEVERITY_RANK[c.severity]
+                if cluster_rank >= threshold_rank:
+                    print(f"[YOLO] auto-approve cluster: {c.primary.rule_id} "
+                          f"({c.severity}, {c.consensus_count} auditors)")
+                    decisions.append(TriageDecision(cluster=c, action="approve"))
+                else:
+                    print(f"[YOLO] auto-skip cluster: {c.primary.rule_id} "
+                          f"({c.severity}, below {self.yolo.vroom_severity} threshold)")
+                    decisions.append(TriageDecision(cluster=c, action="skip"))
+            return decisions
+
+        # Default: interactive prompt (unchanged from M3).
         for c in eligible:
             print("\n" + "=" * 60)
             print(f"Vroom finding (severity: {c.severity}, agreed by {c.consensus_count} auditor(s)):")

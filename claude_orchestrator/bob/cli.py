@@ -126,6 +126,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
         ]
         # Pass through stub env vars so the child uses the same offline mode if any.
         child_env = os.environ.copy()
+        if yolo and yolo.enabled:
+            child_env["BOB_VROOM_YOLO_ENABLED"] = "1"
+            child_env["BOB_VROOM_YOLO_SEVERITY"] = yolo.vroom_severity
         vroom_proc = _subprocess.Popen(
             vroom_cmd,
             stdout=_subprocess.DEVNULL,
@@ -254,7 +257,16 @@ def _cmd_vroom_start(args: argparse.Namespace) -> int:
         codex_aud = CodexSecurityAuditor()
     pool = AuditorPool([SemgrepAuditor(), claude_aud, codex_aud])
 
-    triage_gate = VroomTriageGate()
+    yolo = None
+    if os.environ.get("BOB_VROOM_YOLO_ENABLED") == "1":
+        from claude_orchestrator.bob.yolo import YoloConfig
+        yolo = YoloConfig(
+            enabled=True,
+            sandbox_tier="docker",
+            max_cost=999999.0,  # placeholder; the parent's gating already enforced
+            vroom_severity=os.environ.get("BOB_VROOM_YOLO_SEVERITY", "high"),  # type: ignore[arg-type]
+        )
+    triage_gate = VroomTriageGate(yolo=yolo)
 
     # The fix-loop spawns isolated McLoops on vroom/<id> branches.
     from claude_orchestrator.bob.mcloop.runner import McLoopRunner
@@ -389,7 +401,16 @@ def _cmd_vroom_now(args: argparse.Namespace) -> int:
         codex_aud = CodexSecurityAuditor()
     pool = AuditorPool([SemgrepAuditor(), claude_aud, codex_aud])
 
-    triage_gate = VroomTriageGate()
+    yolo = None
+    if os.environ.get("BOB_VROOM_YOLO_ENABLED") == "1":
+        from claude_orchestrator.bob.yolo import YoloConfig
+        yolo = YoloConfig(
+            enabled=True,
+            sandbox_tier="docker",
+            max_cost=999999.0,  # placeholder; the parent's gating already enforced
+            vroom_severity=os.environ.get("BOB_VROOM_YOLO_SEVERITY", "high"),  # type: ignore[arg-type]
+        )
+    triage_gate = VroomTriageGate(yolo=yolo)
     # No fix_driver in `vroom now` — keep the cycle to "audit + persist + triage" without
     # actually running a fix-loop, so the user can review then run again with --fix.
     cycle = VroomAuditCycle(
