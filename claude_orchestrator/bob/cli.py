@@ -335,6 +335,7 @@ def _cmd_vroom_start(args: argparse.Namespace) -> int:
         project_root=project_root,
         audit_cycle=cycle.run,
         timer_interval_s=args.interval,
+        watch_main_ref=args.watch_main_ref,
     )
     daemon.write_pid()
     print(f"vroom daemon started (pid: {os.getpid()}, interval: {args.interval}s)")
@@ -494,6 +495,11 @@ def build_parser() -> argparse.ArgumentParser:
     # Default action when `bob vroom` is invoked without a subcommand: start the daemon.
     vroom.add_argument("--project", default=".", help="project root (default: cwd)")
     vroom.add_argument("--interval", type=int, default=1800, help="seconds between timer-driven cycles (default: 1800)")
+    vroom.add_argument(
+        "--watch-main-ref",
+        action="store_true",
+        help="trigger a cycle when .git/refs/heads/main changes (post-merge detection)",
+    )
     vroom.set_defaults(func=_cmd_vroom_start)
 
     return parser
