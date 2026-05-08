@@ -450,7 +450,7 @@ def build_parser() -> argparse.ArgumentParser:
                      help="disable a HITL gate by name (repeatable)")
     run.add_argument(
         "--sandbox",
-        choices=["host", "docker"],
+        choices=["host", "docker", "devcontainer"],
         default=None,  # None means "fall back to env var or default"
         help="sandbox tier (default: host; or BOB_SANDBOX_TIER env var)",
     )

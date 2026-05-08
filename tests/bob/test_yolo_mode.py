@@ -39,6 +39,11 @@ def test_yolo_config_disabled_skips_invariants():
     assert cfg.enabled is False  # OK
 
 
+def test_yolo_config_accepts_devcontainer_sandbox():
+    cfg = YoloConfig(enabled=True, sandbox_tier="devcontainer", max_cost=10.0)
+    assert cfg.sandbox_tier == "devcontainer"
+
+
 def test_yolo_config_overrides_via_env(monkeypatch):
     """YoloConfig.from_env reads BOB_YOLO_* env vars."""
     monkeypatch.setenv("BOB_YOLO_MAX_INCONCLUSIVE", "5")

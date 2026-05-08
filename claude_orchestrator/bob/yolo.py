@@ -40,11 +40,11 @@ class YoloConfig:
         if not self.enabled:
             return  # invariants only apply when YOLO is on
 
-        # Required tier 2 sandbox.
-        if self.sandbox_tier != "docker":
+        # Required tier 2+ sandbox.
+        if self.sandbox_tier not in ("docker", "devcontainer"):
             raise YoloInvariantError(
-                f"YOLO requires sandbox_tier='docker' (tier 2); got {self.sandbox_tier!r}. "
-                "Use --sandbox docker to enable."
+                f"YOLO requires sandbox_tier='docker' or 'devcontainer' (tier 2 or 3); "
+                f"got {self.sandbox_tier!r}. Use --sandbox docker or --sandbox devcontainer."
             )
 
         # Required max_cost.

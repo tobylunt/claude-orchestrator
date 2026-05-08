@@ -117,7 +117,12 @@ def _build_executor(tier: str, project_root: Path | None = None):
             dockerfile=dockerfile,
             apply_default_allowlist=apply_allowlist,
         )
-    raise ValueError(f"unknown sandbox tier: {tier!r} (must be host|docker)")
+    if tier == "devcontainer":
+        from claude_orchestrator.bob.sandbox.devcontainer import DevcontainerExecutor
+        if project_root is None:
+            raise ValueError("devcontainer sandbox requires project_root")
+        return DevcontainerExecutor(devcontainer_dir=project_root)
+    raise ValueError(f"unknown sandbox tier: {tier!r} (must be host|docker|devcontainer)")
 
 
 def build_coordinator(
