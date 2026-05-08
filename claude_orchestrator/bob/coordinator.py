@@ -30,6 +30,11 @@ from claude_orchestrator.bob.hitl.gates import (
     GateRegistry,
     GateSkipped,
 )
+from claude_orchestrator.bob.worktree import (
+    WorktreeError,
+    add_worktree,
+    remove_worktree,
+)
 from claude_orchestrator.bob.signals import is_shutdown_requested
 from claude_orchestrator.bob.mcloop.runner import McLoopResult
 from claude_orchestrator.bob.state_io import (
@@ -165,7 +170,20 @@ class Coordinator:
         self._save_feature(feature, feature_dir)
 
         worktree = self.bob_dir / "worktrees" / _feature_dirname(feature)
-        # Worktree creation/cleanup is wired in by the CLI; tests mock mcloop.
+        branch_name = f"bob/{_feature_dirname(feature)}"
+
+        # Create worktree if not already present (idempotent for retries).
+        if not worktree.exists():
+            try:
+                add_worktree(self.project_root, worktree, branch=branch_name)
+                self._log_event("worktree_created", {"feature_id": feature.id, "path": str(worktree)})
+            except WorktreeError as e:
+                feature.status = FeatureStatus.FAILED
+                feature.last_error = f"worktree creation failed: {e}"
+                feature.updated_at = datetime.now(UTC)
+                self._save_feature(feature, feature_dir)
+                self._log_event("feature_failed", {"feature_id": feature.id, "reason": str(e)})
+                return
 
         result: McLoopResult = self.mcloop(
             feature=feature,
@@ -188,6 +206,7 @@ class Coordinator:
                 "feature_id": feature.id,
                 "reason": result.last_reason,
             })
+            # Worktree intentionally LEFT in place on failure so the user can inspect.
             return
 
         feature.status = FeatureStatus.MCLOOP_DONE
@@ -195,11 +214,9 @@ class Coordinator:
         self._save_feature(feature, feature_dir)
 
         if is_shutdown_requested():
-            # Leave feature in MCLOOP_DONE so we can resume from Orchestra later.
             self._log_event("feature_paused_pre_orchestra", {"feature_id": feature.id})
             return
 
-        # ---- Orchestra ----
         self._set_cursor("orchestra", feature.id, run_id)
         verdict: Verdict = self.orchestra(
             feature=feature,
@@ -217,8 +234,15 @@ class Coordinator:
             feature.updated_at = datetime.now(UTC)
             self._save_feature(feature, feature_dir)
             self._log_event("feature_merged", {"feature_id": feature.id})
+            # Remove the worktree after a successful merge.
+            try:
+                remove_worktree(self.project_root, worktree)
+                self._log_event("worktree_removed", {"feature_id": feature.id})
+            except WorktreeError as e:
+                self._log_event("worktree_remove_failed", {
+                    "feature_id": feature.id, "reason": str(e),
+                })
         else:
-            # M1: stub Orchestra rejection behaves like a halt; M2 will retry McLoop.
             feature.status = FeatureStatus.REJECTED
             feature.last_error = verdict.judge_reasoning
             feature.updated_at = datetime.now(UTC)
@@ -227,6 +251,7 @@ class Coordinator:
                 "feature_id": feature.id,
                 "reason": verdict.judge_reasoning,
             })
+            # Worktree LEFT in place on rejection so user can debug.
 
     def _save_feature(self, f: Feature, feature_dir: Path) -> None:
         write_json_atomic(feature_dir / "state.json", f.model_dump(mode="json"))

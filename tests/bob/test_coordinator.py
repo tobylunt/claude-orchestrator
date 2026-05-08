@@ -53,7 +53,15 @@ def _spec_with_features(*names: str) -> Spec:
 
 @pytest.fixture
 def project_root(tmp_path: Path) -> Path:
-    """A bare project root that the Coordinator will create .bob/ inside."""
+    import subprocess as sp
+    sp.run(["git", "init", "-b", "main", str(tmp_path)], check=True)
+    (tmp_path / "README.md").write_text("hi\n")
+    sp.run(["git", "-C", str(tmp_path), "add", "."], check=True)
+    sp.run(
+        ["git", "-C", str(tmp_path), "-c", "user.email=t@t.com",
+         "-c", "user.name=T", "commit", "-m", "init"],
+        check=True,
+    )
     return tmp_path
 
 
@@ -163,6 +171,37 @@ def test_coordinator_marks_feature_failed_on_mcloop_halt(project_root: Path):
     state = read_json(state_path)
     assert state["status"] == "failed"
     assert "no tests collected" in state["last_error"]
+
+
+def test_coordinator_creates_and_removes_worktree(project_root: Path):
+    """When merge succeeds, Coordinator creates the worktree before McLoop and removes it after merge."""
+    spec = _spec_with_features("a")
+    duplo = MagicMock(return_value=spec)
+
+    def mcloop_callable(*, feature, workspace, master_spec, feature_dir):
+        # The workspace must exist when McLoop is called.
+        assert workspace.exists(), f"worktree not created: {workspace}"
+        return McLoopResult(
+            outcome="exit_signal", iterations=1, last_reason="ok", last_status="ok",
+        )
+
+    orchestra_callable = MagicMock(return_value=Verdict(
+        feature_id=1, decision="approve", confidence=1.0,
+        debate_log_path=project_root / ".bob" / "fake.json",
+        judge_reasoning="lgtm",
+    ))
+    gates = GateRegistry(disabled={"post_duplo"})
+
+    coord = Coordinator(
+        project_root=project_root, duplo=duplo, mcloop=mcloop_callable,
+        orchestra=orchestra_callable, gates=gates,
+    )
+    coord.run(RunScope(includes_duplo=True))
+
+    # After merge, the worktree should be removed.
+    worktree_path = project_root / ".bob" / "worktrees" / "001-a"
+    assert not worktree_path.exists(), \
+        f"worktree should have been removed after merge: {worktree_path}"
 
 
 def test_coordinator_aborts_on_shutdown_request(project_root: Path, monkeypatch):
