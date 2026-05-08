@@ -104,7 +104,8 @@ class McLoopRunner:
         for i in range(1, self.max_iterations + 1):
             try:
                 proc = subprocess.run(
-                    [self.claude_cmd, "-p", prompt],
+                    [self.claude_cmd, "-p", prompt,
+                     "--permission-mode", "bypassPermissions"],
                     cwd=str(workspace),
                     capture_output=True,
                     text=True,

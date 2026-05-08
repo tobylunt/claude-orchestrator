@@ -3,6 +3,7 @@
 The runner spawns `claude -p` subprocesses. Tests use a stub `claude`
 shell script (created in tmp_path) to exercise the loop deterministically.
 """
+import subprocess
 from pathlib import Path
 from textwrap import dedent
 
@@ -194,3 +195,47 @@ def test_runner_records_verifier_results(tmp_path: Path):
 
     log = (feature_dir / "verifier-results.jsonl").read_text()
     assert '"status": "ok"' in log
+
+
+def test_runner_passes_permission_bypass_flag(tmp_path: Path, monkeypatch):
+    """McLoop must invoke claude -p with --permission-mode bypassPermissions
+    so tool calls (Edit/Write/Bash) actually execute. Without this flag,
+    claude -p exits without running queued tool calls."""
+    feature = _feature()
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    feature_dir = tmp_path / ".bob" / "features" / "001-t"
+    feature_dir.mkdir(parents=True)
+    (feature_dir / "spec.md").write_text("")
+    (feature_dir / "activity.md").write_text("")
+    (feature_dir / "failed_attempts.md").write_text("")
+    (feature_dir / "verifier-results.jsonl").write_text("")
+    master_spec = tmp_path / ".bob" / "spec.md"
+    master_spec.write_text("")
+
+    captured_args: list = []
+
+    def capture(args, **kwargs):
+        captured_args.append(args)
+        # Return a CompletedProcess that emits EXIT_SIGNAL so the loop terminates.
+        from subprocess import CompletedProcess
+        return CompletedProcess(args, 0, stdout="<promise>EXIT_SIGNAL</promise>", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", capture)
+    verifier = FakeVerifier([
+        VerifyResult(status="ok", reason="", artifacts=[], coverage_notes=None),
+    ])
+    runner = McLoopRunner(claude_cmd="claude", max_iterations=1,
+                         per_iteration_timeout_s=10)
+    runner.run(
+        feature=feature, workspace=workspace,
+        master_spec=master_spec, feature_dir=feature_dir, verifier=verifier,
+    )
+
+    # Inspect the args passed to subprocess.run
+    assert len(captured_args) == 1
+    args = captured_args[0]
+    # Args should be a list like ['claude', '-p', PROMPT, '--permission-mode', 'bypassPermissions']
+    assert "--permission-mode" in args, f"missing permission flag in: {args}"
+    idx = args.index("--permission-mode")
+    assert args[idx + 1] == "bypassPermissions"
