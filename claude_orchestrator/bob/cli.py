@@ -176,9 +176,11 @@ def _cmd_vroom_start(args: argparse.Namespace) -> int:
     import time
     from claude_orchestrator.bob.signals import install_handlers, is_shutdown_requested
     from claude_orchestrator.bob.vroom.auditor_pool import AuditorPool
-    from claude_orchestrator.bob.vroom.coalescer import coalesce_findings
     from claude_orchestrator.bob.vroom.daemon import VroomDaemon
     from claude_orchestrator.bob.vroom.auditors.semgrep import SemgrepAuditor
+    from claude_orchestrator.bob.vroom.audit_cycle import VroomAuditCycle
+    from claude_orchestrator.bob.vroom.fix_loop import FixLoopDriver
+    from claude_orchestrator.bob.vroom.triage import VroomTriageGate
 
     project_root = Path(args.project).resolve()
     if not project_root.exists():
@@ -215,16 +217,68 @@ def _cmd_vroom_start(args: argparse.Namespace) -> int:
         codex_aud = CodexSecurityAuditor()
     pool = AuditorPool([SemgrepAuditor(), claude_aud, codex_aud])
 
-    def audit_cycle():
-        findings = pool.run(workspace=project_root, changed_files=[])
-        clusters = coalesce_findings(findings)
-        # M4: write to findings.jsonl + spawn fix-loops; for M3 just print.
-        print(f"vroom cycle: {len(findings)} raw findings, {len(clusters)} clusters")
-        return clusters
+    triage_gate = VroomTriageGate()
+
+    # The fix-loop spawns isolated McLoops on vroom/<id> branches.
+    from claude_orchestrator.bob.mcloop.runner import McLoopRunner
+    from claude_orchestrator.bob.verifiers.python_pytest import PythonPytestVerifier
+    from claude_orchestrator.bob.sandbox.host import HostExecutor
+
+    runner = McLoopRunner(
+        claude_cmd="claude",
+        max_iterations=10,
+        executor=HostExecutor(),
+    )
+    verifier = PythonPytestVerifier()
+
+    def run_mcloop_for_finding(*, branch_name: str, workspace: Path, finding) -> bool:
+        from claude_orchestrator.models import (
+            Feature, FeatureStatus, TaskType, VerificationPlan,
+        )
+        feature = Feature(
+            id=0,
+            name=f"fix-{finding.rule_id}",
+            description=f"Fix: {finding.message}",
+            task_type=TaskType.LIBRARY,
+            verification_plan=VerificationPlan(
+                verifier_id="python_pytest",
+                success_criteria=["all tests pass"],
+                required_tools=["pytest"],
+            ),
+            status=FeatureStatus.PENDING,
+        )
+        vroom_feature_dir = project_root / ".bob" / "vroom-features" / branch_name.replace("/", "-")
+        vroom_feature_dir.mkdir(parents=True, exist_ok=True)
+        for f in ("spec.md", "activity.md", "failed_attempts.md", "verifier-results.jsonl"):
+            (vroom_feature_dir / f).write_text("")
+        master_spec = project_root / ".bob" / "spec.md"
+        if not master_spec.exists():
+            master_spec.write_text("# (vroom)\n")
+
+        result = runner.run(
+            feature=feature,
+            workspace=workspace,
+            master_spec=master_spec,
+            feature_dir=vroom_feature_dir,
+            verifier=verifier,
+        )
+        return result.outcome == "exit_signal"
+
+    fix_driver = FixLoopDriver(
+        repo=project_root,
+        run_mcloop=run_mcloop_for_finding,
+    )
+
+    cycle = VroomAuditCycle(
+        project_root=project_root,
+        auditor_pool=pool,
+        triage_gate=triage_gate,
+        fix_driver=fix_driver,
+    )
 
     daemon = VroomDaemon(
         project_root=project_root,
-        audit_cycle=audit_cycle,
+        audit_cycle=cycle.run,
         timer_interval_s=args.interval,
     )
     daemon.write_pid()
@@ -268,8 +322,9 @@ def _cmd_vroom_stop(args: argparse.Namespace) -> int:
 def _cmd_vroom_now(args: argparse.Namespace) -> int:
     """Run one audit cycle synchronously and exit."""
     from claude_orchestrator.bob.vroom.auditor_pool import AuditorPool
-    from claude_orchestrator.bob.vroom.coalescer import coalesce_findings
     from claude_orchestrator.bob.vroom.auditors.semgrep import SemgrepAuditor
+    from claude_orchestrator.bob.vroom.audit_cycle import VroomAuditCycle
+    from claude_orchestrator.bob.vroom.triage import VroomTriageGate
 
     project_root = Path(args.project).resolve()
 
@@ -296,13 +351,22 @@ def _cmd_vroom_now(args: argparse.Namespace) -> int:
         from claude_orchestrator.bob.vroom.auditors.codex_security import CodexSecurityAuditor
         codex_aud = CodexSecurityAuditor()
     pool = AuditorPool([SemgrepAuditor(), claude_aud, codex_aud])
-    findings = pool.run(workspace=project_root, changed_files=[])
-    clusters = coalesce_findings(findings)
-    print(f"vroom cycle complete: {len(findings)} raw findings → {len(clusters)} clusters")
-    for c in clusters[:10]:  # show top 10 by severity
+
+    triage_gate = VroomTriageGate()
+    # No fix_driver in `vroom now` — keep the cycle to "audit + persist + triage" without
+    # actually running a fix-loop, so the user can review then run again with --fix.
+    cycle = VroomAuditCycle(
+        project_root=project_root,
+        auditor_pool=pool,
+        triage_gate=triage_gate,
+        fix_driver=None,
+    )
+    clusters = cycle.run()
+    print(f"vroom cycle complete: {len(clusters)} clusters")
+    for c in clusters[:10]:
         primary = c.findings[0]
-        print(f"  [{c.severity}] {primary.rule_id} at {primary.location.uri}:{primary.location.start_line} "
-              f"(consensus {c.consensus_count})")
+        print(f"  [{c.severity}] {primary.rule_id} at {primary.location.uri}:"
+              f"{primary.location.start_line} (consensus {c.consensus_count})")
     return 0
 
 
