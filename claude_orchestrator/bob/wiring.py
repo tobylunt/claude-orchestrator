@@ -16,7 +16,6 @@ from claude_orchestrator.bob.hitl.gates import GateRegistry, PostDuploGate
 from claude_orchestrator.bob.mcloop.runner import McLoopResult, McLoopRunner
 from claude_orchestrator.bob.orchestra.stub import OrchestraStub
 from claude_orchestrator.bob.verifiers.protocol import Verifier
-from claude_orchestrator.bob.verifiers.python_pytest import PythonPytestVerifier
 from claude_orchestrator.bob.verifiers.registry import VerifierRegistry
 from claude_orchestrator.models import Feature, Verdict
 
@@ -77,9 +76,17 @@ def _build_orchestra():
 
 
 def build_verifier_registry() -> VerifierRegistry:
-    """Register the M1 verifiers. M2 proper expands the roster."""
+    """Register the M2 verifier roster."""
+    from claude_orchestrator.bob.verifiers.python_pytest import PythonPytestVerifier
+    from claude_orchestrator.bob.verifiers.lint_universal import LintUniversalVerifier
+    from claude_orchestrator.bob.verifiers.data_analysis import DataAnalysisVerifier
+    from claude_orchestrator.bob.verifiers.geospatial import GeospatialVerifier
+
     reg = VerifierRegistry()
     reg.register(PythonPytestVerifier())
+    reg.register(LintUniversalVerifier())
+    reg.register(DataAnalysisVerifier())
+    reg.register(GeospatialVerifier())
     return reg
 
 

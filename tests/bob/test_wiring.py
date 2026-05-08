@@ -24,6 +24,12 @@ def test_build_verifier_registry_includes_python_pytest():
     assert isinstance(v, PythonPytestVerifier)
 
 
+def test_build_verifier_registry_has_all_m2_verifiers():
+    reg = build_verifier_registry()
+    for vid in ["python_pytest", "lint_universal", "data_analysis", "geospatial"]:
+        assert reg.get(vid) is not None
+
+
 def test_auto_approve_judge_returns_approve():
     judge = AutoApproveJudge()
     feature = Feature(
