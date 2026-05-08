@@ -207,12 +207,13 @@ def _cmd_vroom_start(args: argparse.Namespace) -> int:
         from claude_orchestrator.bob.vroom.auditors.claude_architect import ClaudeArchitectAuditor
         claude_aud = ClaudeArchitectAuditor()
 
-    from claude_orchestrator.bob.vroom.auditors.llm_stubs import CodexSecurityAuditorStub
-    pool = AuditorPool([
-        SemgrepAuditor(),
-        claude_aud,
-        CodexSecurityAuditorStub(),  # M4 Task 2 replaces this
-    ])
+    if use_stub:
+        from claude_orchestrator.bob.vroom.auditors.llm_stubs import CodexSecurityAuditorStub
+        codex_aud = CodexSecurityAuditorStub()
+    else:
+        from claude_orchestrator.bob.vroom.auditors.codex_security import CodexSecurityAuditor
+        codex_aud = CodexSecurityAuditor()
+    pool = AuditorPool([SemgrepAuditor(), claude_aud, codex_aud])
 
     def audit_cycle():
         findings = pool.run(workspace=project_root, changed_files=[])
@@ -288,12 +289,13 @@ def _cmd_vroom_now(args: argparse.Namespace) -> int:
         from claude_orchestrator.bob.vroom.auditors.claude_architect import ClaudeArchitectAuditor
         claude_aud = ClaudeArchitectAuditor()
 
-    from claude_orchestrator.bob.vroom.auditors.llm_stubs import CodexSecurityAuditorStub
-    pool = AuditorPool([
-        SemgrepAuditor(),
-        claude_aud,
-        CodexSecurityAuditorStub(),  # M4 Task 2 replaces this
-    ])
+    if use_stub:
+        from claude_orchestrator.bob.vroom.auditors.llm_stubs import CodexSecurityAuditorStub
+        codex_aud = CodexSecurityAuditorStub()
+    else:
+        from claude_orchestrator.bob.vroom.auditors.codex_security import CodexSecurityAuditor
+        codex_aud = CodexSecurityAuditor()
+    pool = AuditorPool([SemgrepAuditor(), claude_aud, codex_aud])
     findings = pool.run(workspace=project_root, changed_files=[])
     clusters = coalesce_findings(findings)
     print(f"vroom cycle complete: {len(findings)} raw findings → {len(clusters)} clusters")
