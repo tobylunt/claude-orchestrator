@@ -36,7 +36,7 @@ class VerifyResult:
 
 
 class Verifier(Protocol):
-    """The protocol every verifier implements. Pyhton's runtime Protocol."""
+    """The protocol every verifier implements. Python's runtime Protocol."""
 
     id: str
 
