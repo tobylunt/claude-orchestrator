@@ -171,6 +171,9 @@ def test_coordinator_marks_feature_failed_on_mcloop_halt(project_root: Path):
     state = read_json(state_path)
     assert state["status"] == "failed"
     assert "no tests collected" in state["last_error"]
+    # Worktree intentionally LEFT in place on failure for inspection (M2a/b design).
+    worktree_path = bob_dir / "worktrees" / "001-a"
+    assert worktree_path.exists(), "failed-feature worktree should remain for inspection"
 
 
 def test_coordinator_creates_and_removes_worktree(project_root: Path):

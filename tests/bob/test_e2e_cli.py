@@ -43,7 +43,7 @@ def fake_claude_dir(tmp_path_factory) -> Path:
 
 
 def test_bob_run_against_tiny_project(
-    project_root: Path, fake_claude_dir: Path, monkeypatch
+    project_root: Path, fake_claude_dir: Path
 ):
     """`bob run --inputs spec.md` runs the full pipeline and merges one feature."""
     spec_path = project_root / "spec.md"
@@ -81,6 +81,8 @@ def test_bob_run_against_tiny_project(
     assert bob_dir.exists()
     assert (bob_dir / "spec.md").exists()
     assert (bob_dir / "cursor.json").exists()
+    # Spec was captured in inputs/ for posterity:
+    assert (bob_dir / "inputs" / "spec.md").exists()
     feature_dirs = list((bob_dir / "features").iterdir())
     assert len(feature_dirs) == 1
 

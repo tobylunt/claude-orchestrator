@@ -18,7 +18,14 @@ _cleanup_callbacks: list[Callable[[], None]] = []
 
 
 def install_handlers() -> None:
-    """Install SIGINT/SIGTERM/SIGHUP -> _shutdown_requested = True."""
+    """Install SIGINT/SIGTERM/SIGHUP -> _shutdown_requested = True.
+
+    Idempotent: clears any prior cleanup callbacks (relevant in tests that
+    call main() in-process multiple times within a single Python interpreter).
+    """
+    global _shutdown_requested, _cleanup_callbacks
+    _shutdown_requested = False
+    _cleanup_callbacks = []
     for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(sig, _on_signal)
     atexit.register(_run_cleanups)

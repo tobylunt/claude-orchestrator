@@ -103,8 +103,8 @@ class FeatureStatus(StrEnum):
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
     MCLOOP_DONE = "mcloop_done"
-    ORCHESTRA_PENDING = "orchestra_pending"
-    APPROVED = "approved"
+    ORCHESTRA_PENDING = "orchestra_pending"  # M2 proper sets this during real Orchestra debate
+    APPROVED = "approved"  # M2 proper sets this between Orchestra approval and merge
     REJECTED = "rejected"
     MERGED = "merged"
     SKIPPED = "skipped"

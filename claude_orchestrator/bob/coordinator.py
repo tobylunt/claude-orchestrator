@@ -30,17 +30,17 @@ from claude_orchestrator.bob.hitl.gates import (
     GateRegistry,
     GateSkipped,
 )
-from claude_orchestrator.bob.worktree import (
-    WorktreeError,
-    add_worktree,
-    remove_worktree,
-)
-from claude_orchestrator.bob.signals import is_shutdown_requested
 from claude_orchestrator.bob.mcloop.runner import McLoopResult
+from claude_orchestrator.bob.signals import is_shutdown_requested
 from claude_orchestrator.bob.state_io import (
     append_jsonl,
     read_json,
     write_json_atomic,
+)
+from claude_orchestrator.bob.worktree import (
+    WorktreeError,
+    add_worktree,
+    remove_worktree,
 )
 from claude_orchestrator.models import (
     Feature,
@@ -125,6 +125,9 @@ class Coordinator:
             feature = Feature.model_validate_json(
                 (feature_dir / "state.json").read_text()
             )
+            # REJECTED is intentionally absent — a rejected feature is retried
+            # on the next run with the debate log fed back as McLoop context
+            # (M2 proper wires this; for M2a/b the retry just re-enters McLoop).
             if feature.status in (
                 FeatureStatus.MERGED, FeatureStatus.SKIPPED, FeatureStatus.FAILED
             ):
