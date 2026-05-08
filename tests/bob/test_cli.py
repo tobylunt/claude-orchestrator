@@ -260,3 +260,53 @@ def test_orchestrate_bob_run_vroom_spawns_subprocess(tmp_path: Path, monkeypatch
 
     # After bob run exits, the vroom.pid file should be gone (clean shutdown).
     assert not (tmp_path / ".bob" / "vroom.pid").exists()
+
+
+def test_orchestrate_bob_run_loads_dotenv(tmp_path: Path):
+    """A .env in the project root should be picked up by `bob run`."""
+    import subprocess as sp
+    sp.run(["git", "init", "-b", "main", str(tmp_path)], check=True)
+    (tmp_path / "x.py").write_text("def x(): pass\n")
+    sp.run(["git", "-C", str(tmp_path), "add", "."], check=True)
+    sp.run(["git", "-C", str(tmp_path), "-c", "user.email=t@t.com",
+            "-c", "user.name=T", "commit", "-m", "init"], check=True)
+
+    # Put a .env that sets BOB_USE_STUB_ORCHESTRA=1 in the project.
+    (tmp_path / ".env").write_text("BOB_USE_STUB_ORCHESTRA=1\n")
+
+    spec = tmp_path / "spec.md"
+    spec.write_text("# T\n## Motivation\nm\n## Features\n### F1: a\n"
+                    "- task_type: library\n- verifier: python_pytest\n"
+                    "- success_criteria:\n  - x\n- description: a\n")
+
+    # Note: do NOT set BOB_USE_STUB_ORCHESTRA in the env here. The .env file
+    # is the only source. The test just verifies it doesn't crash with an
+    # API key error (which would happen if .env wasn't loaded and real
+    # Orchestra tried to call Anthropic without a key).
+    fake_dir = tmp_path / "fake-bin"
+    fake_dir.mkdir()
+    fake = fake_dir / "claude"
+    fake.write_text('#!/bin/sh\necho "<promise>EXIT_SIGNAL</promise>"\n')
+    fake.chmod(0o755)
+
+    env = {
+        **os.environ,
+        "PATH": f"{fake_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+    }
+    # Explicitly ensure the env doesn't already have the flag.
+    env.pop("BOB_USE_STUB_ORCHESTRA", None)
+    env.pop("BOB_USE_STUB_VROOM", None)
+    env["BOB_USE_STUB_VROOM"] = "1"  # avoid Vroom API calls regardless of .env
+    env["BOB_USE_STUB_DUPLO"] = "1"
+
+    result = sp.run(
+        [sys.executable, "-m", "claude_orchestrator.bob.cli", "run",
+         "--project", str(tmp_path),
+         "--inputs", str(spec),
+         "--max-iterations", "1",
+         "--no-gate", "post_duplo"],
+        capture_output=True, text=True, env=env, timeout=60,
+    )
+    assert result.returncode == 0, \
+        f"bob run failed:\n{result.stdout}\n{result.stderr}"
+    # If .env was loaded, BOB_USE_STUB_ORCHESTRA=1 took effect and the run completed.

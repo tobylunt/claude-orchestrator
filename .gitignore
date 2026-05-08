@@ -9,6 +9,7 @@ build/
 .venv/
 venv/
 .env
+.env.local
 .orchestrator/logs/
 *.jsonl
 .pytest_cache/
