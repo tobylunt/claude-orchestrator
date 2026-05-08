@@ -63,6 +63,7 @@ def test_bob_run_against_tiny_project(
     # Put fake claude on PATH; the wiring uses claude_cmd="claude" by default.
     env = os.environ.copy()
     env["PATH"] = str(fake_claude_dir) + os.pathsep + env["PATH"]
+    env["BOB_USE_STUB_ORCHESTRA"] = "1"  # so the test doesn't call real APIs
 
     result = subprocess.run(
         [sys.executable, "-m", "claude_orchestrator.bob.cli", "run",

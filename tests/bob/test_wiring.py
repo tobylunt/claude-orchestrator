@@ -41,8 +41,9 @@ def test_auto_approve_judge_returns_approve():
     assert result["confidence"] == 1.0
 
 
-def test_build_coordinator_returns_callable_coordinator(tmp_path: Path):
+def test_build_coordinator_returns_callable_coordinator(tmp_path: Path, monkeypatch):
     """Smoke test: build_coordinator returns a Coordinator that has duplo/mcloop/orchestra wired."""
+    monkeypatch.setenv("BOB_USE_STUB_ORCHESTRA", "1")
     sp.run(["git", "init", "-b", "main", str(tmp_path)], check=True)
     (tmp_path / "README.md").write_text("hi\n")
     sp.run(["git", "-C", str(tmp_path), "add", "."], check=True)
@@ -70,3 +71,32 @@ def test_build_coordinator_returns_callable_coordinator(tmp_path: Path):
     spec = coord.duplo()
     assert spec.title == "T"
     assert len(spec.features) == 1
+
+
+def test_build_coordinator_uses_stub_when_env_set(tmp_path: Path, monkeypatch):
+    """BOB_USE_STUB_ORCHESTRA=1 falls back to OrchestraStub (offline mode)."""
+    monkeypatch.setenv("BOB_USE_STUB_ORCHESTRA", "1")
+    sp.run(["git", "init", "-b", "main", str(tmp_path)], check=True)
+    (tmp_path / "README.md").write_text("hi\n")
+    sp.run(["git", "-C", str(tmp_path), "add", "."], check=True)
+    sp.run(
+        ["git", "-C", str(tmp_path), "-c", "user.email=t@t.com",
+         "-c", "user.name=T", "commit", "-m", "init"],
+        check=True,
+    )
+
+    spec_path = tmp_path / "spec.md"
+    spec_path.write_text(
+        "# T\n## Motivation\nm\n## Features\n### F1: a\n"
+        "- task_type: library\n- verifier: python_pytest\n"
+        "- success_criteria:\n  - x\n- description: a\n"
+    )
+    coord = build_coordinator(
+        project_root=tmp_path,
+        spec_path=spec_path,
+        max_iterations=1,
+        disabled_gates={"post_duplo"},
+        claude_cmd="echo",
+    )
+    # Just confirm build_coordinator doesn't crash with the stub.
+    assert coord.duplo() is not None

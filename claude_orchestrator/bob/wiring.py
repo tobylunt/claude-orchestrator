@@ -6,6 +6,7 @@ without touching argparse code.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,44 @@ class AutoApproveJudge:
         }
 
 
+def _build_orchestra():
+    """Return an Orchestra instance based on environment configuration.
+
+    Uses OrchestraStub when BOB_USE_STUB_ORCHESTRA=1 (for tests / offline
+    mode). Otherwise builds a RealOrchestra with production debate agents.
+    """
+    if os.environ.get("BOB_USE_STUB_ORCHESTRA", "0") == "1":
+        return OrchestraStub(judge=AutoApproveJudge())
+
+    from claude_orchestrator.bob.orchestra.real import RealOrchestra
+    from claude_orchestrator.bob.orchestra.agents import (
+        AnthropicDebateAgent,
+        OpenAIDebateAgent,
+    )
+
+    claude_agent = AnthropicDebateAgent(
+        model=os.environ.get("BOB_ORCHESTRA_CLAUDE_MODEL", "claude-sonnet-4-6"),
+        system='You are a thoughtful implementer defending the diff. Reply JSON: {"content": "...", "decision": "approve|reject|abstain"}',
+        role="claude",
+    )
+    codex_agent = OpenAIDebateAgent(
+        model=os.environ.get("BOB_ORCHESTRA_CODEX_MODEL", "gpt-5.4"),
+        system='You are an adversarial reviewer. Find bugs, edge cases, security issues. Reply JSON: {"content": "...", "decision": "approve|reject|abstain"}',
+        role="codex",
+    )
+    judge_agent = AnthropicDebateAgent(
+        model=os.environ.get("BOB_ORCHESTRA_JUDGE_MODEL", "claude-opus-4-7"),
+        system='You synthesize the debate. Reply JSON: {"content": "...", "decision": "approve|reject|abstain", "confidence": 0.0..1.0}',
+        role="judge",
+    )
+    return RealOrchestra(
+        claude_agent=claude_agent,
+        codex_agent=codex_agent,
+        judge_agent=judge_agent,
+        max_rounds=int(os.environ.get("BOB_ORCHESTRA_MAX_ROUNDS", "5")),
+    )
+
+
 def build_verifier_registry() -> VerifierRegistry:
     """Register the M1 verifiers. M2 proper expands the roster."""
     reg = VerifierRegistry()
@@ -63,7 +102,7 @@ def build_coordinator(
         max_iterations=max_iterations,
         per_iteration_timeout_s=per_iteration_timeout_s,
     )
-    orchestra_stub = OrchestraStub(judge=AutoApproveJudge())
+    orchestra_obj = _build_orchestra()
 
     def duplo_callable():
         spec = parse_markdown_spec(spec_path)
@@ -85,10 +124,8 @@ def build_coordinator(
 
     def orchestra_callable(*, feature: Feature, workspace: Path,
                            feature_dir: Path) -> Verdict:
-        # M2a: stub Orchestra reads the worktree's HEAD diff against main.
-        # M2 proper passes the actual diff to AutoGen agents.
         diff = "(M2a placeholder; full diff capture in M2 proper)"
-        return orchestra_stub.review(
+        return orchestra_obj.review(
             feature=feature,
             diff=diff,
             debate_log_dir=feature_dir,
