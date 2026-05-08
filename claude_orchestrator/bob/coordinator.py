@@ -30,6 +30,7 @@ from claude_orchestrator.bob.hitl.gates import (
     GateRegistry,
     GateSkipped,
 )
+from claude_orchestrator.bob.signals import is_shutdown_requested
 from claude_orchestrator.bob.mcloop.runner import McLoopResult
 from claude_orchestrator.bob.state_io import (
     append_jsonl,
@@ -112,6 +113,10 @@ class Coordinator:
         for feature_dir in sorted((self.bob_dir / "features").iterdir()):
             if not feature_dir.is_dir():
                 continue
+            if is_shutdown_requested():
+                self._log_event("run_aborted", {"reason": "shutdown_requested"})
+                self._set_cursor("idle", None, run_id)
+                return
             feature = Feature.model_validate_json(
                 (feature_dir / "state.json").read_text()
             )
@@ -188,6 +193,11 @@ class Coordinator:
         feature.status = FeatureStatus.MCLOOP_DONE
         feature.updated_at = datetime.now(UTC)
         self._save_feature(feature, feature_dir)
+
+        if is_shutdown_requested():
+            # Leave feature in MCLOOP_DONE so we can resume from Orchestra later.
+            self._log_event("feature_paused_pre_orchestra", {"feature_id": feature.id})
+            return
 
         # ---- Orchestra ----
         self._set_cursor("orchestra", feature.id, run_id)

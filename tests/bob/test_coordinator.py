@@ -163,3 +163,44 @@ def test_coordinator_marks_feature_failed_on_mcloop_halt(project_root: Path):
     state = read_json(state_path)
     assert state["status"] == "failed"
     assert "no tests collected" in state["last_error"]
+
+
+def test_coordinator_aborts_on_shutdown_request(project_root: Path, monkeypatch):
+    """Setting the shutdown flag between features stops the loop."""
+    from claude_orchestrator.bob import signals
+    spec = _spec_with_features("a", "b")
+
+    duplo = MagicMock(return_value=spec)
+    # mcloop sets the shutdown flag during the FIRST feature; the second feature
+    # must not run.
+    def mcloop_setting_shutdown(*, feature, workspace, master_spec, feature_dir):
+        # Simulate Ctrl-C right after the first feature's mcloop returns.
+        signals._shutdown_requested = True
+        return McLoopResult(
+            outcome="exit_signal", iterations=1, last_reason="ok", last_status="ok",
+        )
+    mcloop = MagicMock(side_effect=mcloop_setting_shutdown)
+    orchestra = MagicMock(return_value=Verdict(
+        feature_id=1, decision="approve", confidence=1.0,
+        debate_log_path=project_root / ".bob" / "fake.json",
+        judge_reasoning="lgtm",
+    ))
+    gates = GateRegistry(disabled={"post_duplo"})
+
+    # Reset the global shutdown flag at the start of the test
+    signals._shutdown_requested = False
+
+    coord = Coordinator(
+        project_root=project_root, duplo=duplo, mcloop=mcloop,
+        orchestra=orchestra, gates=gates,
+    )
+    try:
+        coord.run(RunScope(includes_duplo=True))
+    finally:
+        signals._shutdown_requested = False  # leave clean for other tests
+
+    # Only the first feature ran:
+    assert mcloop.call_count == 1
+    # Run-log records the shutdown:
+    events = [e["event"] for e in read_jsonl(project_root / ".bob" / "run-log.jsonl")]
+    assert "run_aborted" in events
