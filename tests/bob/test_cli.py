@@ -168,3 +168,37 @@ def test_orchestrate_bob_run_help_mentions_vroom():
     )
     assert result.returncode == 0
     assert "--vroom" in result.stdout
+
+
+def test_orchestrate_bob_run_yolo_requires_docker_sandbox(tmp_path: Path):
+    """--yolo without --sandbox docker should fail with invariant error."""
+    spec = tmp_path / "spec.md"
+    spec.write_text("# T\n## Motivation\nm\n## Features\n### F1: a\n- task_type: library\n- verifier: python_pytest\n- success_criteria:\n  - x\n- description: a\n")
+    result = subprocess.run(
+        [sys.executable, "-m", "claude_orchestrator.bob.cli", "run",
+         "--project", str(tmp_path),
+         "--inputs", str(spec),
+         "--yolo",
+         "--max-cost", "10.0"],  # max-cost set, but sandbox is default (host)
+        capture_output=True, text=True,
+    )
+    assert result.returncode != 0
+    out = (result.stdout + result.stderr).lower()
+    assert "sandbox" in out or "docker" in out
+
+
+def test_orchestrate_bob_run_yolo_requires_max_cost(tmp_path: Path):
+    """--yolo --sandbox docker without --max-cost should fail."""
+    spec = tmp_path / "spec.md"
+    spec.write_text("# T\n## Motivation\nm\n## Features\n### F1: a\n- task_type: library\n- verifier: python_pytest\n- success_criteria:\n  - x\n- description: a\n")
+    result = subprocess.run(
+        [sys.executable, "-m", "claude_orchestrator.bob.cli", "run",
+         "--project", str(tmp_path),
+         "--inputs", str(spec),
+         "--yolo",
+         "--sandbox", "docker"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode != 0
+    out = (result.stdout + result.stderr).lower()
+    assert "max_cost" in out or "max-cost" in out

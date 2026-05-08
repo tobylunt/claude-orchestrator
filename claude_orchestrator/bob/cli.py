@@ -87,6 +87,26 @@ def _cmd_run(args: argparse.Namespace) -> int:
         or os.environ.get("BOB_SANDBOX_TIER")
         or "host"
     )
+
+    from claude_orchestrator.bob.yolo import YoloConfig, YoloInvariantError
+
+    try:
+        yolo = YoloConfig.from_env(
+            enabled=args.yolo,
+            sandbox_tier=sandbox_tier,
+            max_cost=args.max_cost,
+        )
+    except YoloInvariantError as e:
+        print(f"yolo error: {e}", file=sys.stderr)
+        return 5
+
+    # (yolo is built but not yet plumbed into Coordinator/Wiring — that integration
+    # is progressive. For M3, simply validating the config + surfacing it in logs
+    # is enough to demonstrate the invariant enforcement.)
+    if yolo.enabled:
+        print(f"YOLO mode enabled: sandbox={yolo.sandbox_tier} max_cost=${yolo.max_cost} "
+              f"max_inconclusive={yolo.max_inconclusive} vroom_severity={yolo.vroom_severity}")
+
     coord = build_coordinator(
         project_root=project_root,
         spec_path=spec_path,
@@ -277,6 +297,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--vroom",
         action="store_true",
         help="run continuous Vroom audit loop in parallel with the feature loop",
+    )
+    run.add_argument(
+        "--yolo",
+        action="store_true",
+        help="enable YOLO mode (unattended; requires --sandbox docker and --max-cost)",
     )
     run.set_defaults(func=_cmd_run)
 
