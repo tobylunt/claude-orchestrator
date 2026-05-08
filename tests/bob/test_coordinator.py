@@ -295,3 +295,46 @@ def test_coordinator_resumes_from_mcloop_done(project_root: Path):
     # Final status: merged.
     final = json.loads((feature_dir / "state.json").read_text())
     assert final["status"] == "merged"
+
+
+def test_coordinator_does_not_overwrite_merged_features_on_rerun(project_root: Path):
+    """Re-running with the same spec must not reset status of already-merged features."""
+    import json
+    spec = _spec_with_features("a")
+
+    duplo = MagicMock(return_value=spec)
+    mcloop = MagicMock(return_value=McLoopResult(
+        outcome="exit_signal", iterations=1, last_reason="ok", last_status="ok",
+    ))
+    orchestra = MagicMock(return_value=Verdict(
+        feature_id=1, decision="approve", confidence=1.0,
+        debate_log_path=project_root / ".bob" / "fake.json",
+        judge_reasoning="lgtm",
+    ))
+    gates = GateRegistry(disabled={"post_duplo"})
+
+    coord = Coordinator(
+        project_root=project_root, duplo=duplo, mcloop=mcloop,
+        orchestra=orchestra, gates=gates,
+    )
+
+    # First run: feature is merged.
+    coord.run(RunScope(includes_duplo=True))
+    feature_dir = project_root / ".bob" / "features" / "001-a"
+    state1 = json.loads((feature_dir / "state.json").read_text())
+    assert state1["status"] == "merged"
+
+    # Second run: rebuild Coordinator (fresh state machine), same spec.
+    coord2 = Coordinator(
+        project_root=project_root, duplo=duplo, mcloop=mcloop,
+        orchestra=orchestra, gates=gates,
+    )
+    coord2.run(RunScope(includes_duplo=True))
+
+    # Feature stays merged. McLoop and Orchestra do NOT get called again.
+    state2 = json.loads((feature_dir / "state.json").read_text())
+    assert state2["status"] == "merged", \
+        f"second run reset status; should preserve merged but got {state2['status']!r}"
+    # mcloop.call_count was 1 from the first run; must still be 1 after the second.
+    assert mcloop.call_count == 1
+    assert orchestra.call_count == 1

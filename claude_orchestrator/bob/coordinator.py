@@ -156,14 +156,22 @@ class Coordinator:
 
         for f in spec.features:
             d = self.bob_dir / "features" / _feature_dirname(f)
+            is_new = not d.exists() or not (d / "state.json").exists()
             d.mkdir(parents=True, exist_ok=True)
-            (d / "spec.md").write_text(
-                f"# F{f.id}: {f.name}\n\n{f.description}\n"
-            )
-            (d / "activity.md").write_text("")
-            (d / "failed_attempts.md").write_text("")
-            (d / "verifier-results.jsonl").write_text("")
-            write_json_atomic(d / "state.json", f.model_dump(mode="json"))
+
+            if is_new:
+                (d / "spec.md").write_text(
+                    f"# F{f.id}: {f.name}\n\n{f.description}\n"
+                )
+                (d / "activity.md").write_text("")
+                (d / "failed_attempts.md").write_text("")
+                (d / "verifier-results.jsonl").write_text("")
+                write_json_atomic(d / "state.json", f.model_dump(mode="json"))
+            # else: feature already exists — preserve its state.json, activity.md,
+            # failed_attempts.md, verifier-results.jsonl, and spec.md from the prior run.
+            # The skip-list check in run() will see the existing status and behave correctly
+            # (MERGED/SKIPPED/FAILED features will be skipped; PENDING/IN_PROGRESS/MCLOOP_DONE
+            # will be picked up).
 
     def _run_feature(self, feature: Feature, feature_dir: Path, run_id: str) -> None:
         self._set_cursor("mcloop", feature.id, run_id)
