@@ -6,9 +6,12 @@ gates land with their respective phases (M2 / M3).
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import Any, Protocol, TYPE_CHECKING
 
 from claude_orchestrator.models import Spec, StrEnum
+
+if TYPE_CHECKING:
+    from claude_orchestrator.bob.yolo import YoloConfig
 
 
 class GateDecision(StrEnum):
@@ -29,7 +32,19 @@ class Gate(Protocol):
 class PostDuploGate:
     name = "post_duplo"
 
+    def __init__(self, *, yolo: "YoloConfig | None" = None) -> None:
+        self.yolo = yolo
+
     def run(self, spec: Spec) -> GateDecision:
+        # YOLO auto-approve: enabled + meta-rubric passed.
+        if (
+            self.yolo is not None
+            and self.yolo.enabled
+            and spec.rubric_meta_check_passed
+        ):
+            print("[YOLO] post-Duplo gate auto-approved (meta-rubric passed)")
+            return GateDecision.APPROVE
+
         print("\n" + "=" * 60)
         print("Duplo produced the following spec:")
         print(f"  Title: {spec.title}")

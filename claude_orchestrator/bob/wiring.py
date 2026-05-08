@@ -17,6 +17,7 @@ from claude_orchestrator.bob.mcloop.runner import McLoopResult, McLoopRunner
 from claude_orchestrator.bob.orchestra.stub import OrchestraStub
 from claude_orchestrator.bob.verifiers.protocol import Verifier
 from claude_orchestrator.bob.verifiers.registry import VerifierRegistry
+from claude_orchestrator.bob.yolo import YoloConfig
 from claude_orchestrator.models import Feature, Verdict
 
 
@@ -113,6 +114,7 @@ def build_coordinator(
     disabled_gates: set[str] | None = None,
     claude_cmd: str = "claude",
     sandbox_tier: str = "host",  # "host" | "docker"
+    yolo: YoloConfig | None = None,  # NEW
 ) -> Coordinator:
     """Assemble a Coordinator from a project root + markdown spec path.
 
@@ -172,7 +174,7 @@ def build_coordinator(
         )
 
     gates = GateRegistry(disabled=disabled_gates or set())
-    gates.register("post_duplo", PostDuploGate())
+    gates.register("post_duplo", PostDuploGate(yolo=yolo))
 
     return Coordinator(
         project_root=project_root,

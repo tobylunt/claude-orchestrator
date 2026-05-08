@@ -65,3 +65,43 @@ def test_registry_runs_when_not_disabled(monkeypatch):
     reg.register("post_duplo", PostDuploGate())
     decision = reg.run("post_duplo", _spec())
     assert decision == GateDecision.APPROVE
+
+
+def test_post_duplo_gate_auto_approves_when_yolo_enabled(monkeypatch):
+    """When YoloConfig.enabled=True and rubric_meta_check_passed=True, auto-approve."""
+    from claude_orchestrator.bob.yolo import YoloConfig
+    yolo = YoloConfig(enabled=True, sandbox_tier="docker", max_cost=10.0)
+
+    # No stdin: input() would block. The auto-approve should kick in BEFORE input().
+    spec = _spec()
+    assert spec.rubric_meta_check_passed is True
+
+    gate = PostDuploGate(yolo=yolo)
+    decision = gate.run(spec)
+    assert decision == GateDecision.APPROVE
+
+
+def test_post_duplo_gate_does_not_auto_approve_without_meta_rubric(monkeypatch):
+    """Even with YOLO enabled, fail-closed if rubric_meta_check_passed=False."""
+    import io
+    monkeypatch.setattr("sys.stdin", io.StringIO("n\n"))  # user says no
+    from claude_orchestrator.bob.yolo import YoloConfig
+    yolo = YoloConfig(enabled=True, sandbox_tier="docker", max_cost=10.0)
+
+    spec = _spec()
+    spec.rubric_meta_check_passed = False  # meta-rubric did NOT pass
+
+    gate = PostDuploGate(yolo=yolo)
+    decision = gate.run(spec)
+    # Falls back to interactive prompt; user said 'n' => REJECT.
+    assert decision == GateDecision.REJECT
+
+
+def test_post_duplo_gate_default_no_yolo_still_prompts(monkeypatch):
+    """Without YoloConfig (or enabled=False), gate prompts the user."""
+    import io
+    monkeypatch.setattr("sys.stdin", io.StringIO("y\n"))
+
+    gate = PostDuploGate()  # no yolo arg
+    decision = gate.run(_spec())
+    assert decision == GateDecision.APPROVE

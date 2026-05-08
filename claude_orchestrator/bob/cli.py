@@ -100,9 +100,6 @@ def _cmd_run(args: argparse.Namespace) -> int:
         print(f"yolo error: {e}", file=sys.stderr)
         return 5
 
-    # (yolo is built but not yet plumbed into Coordinator/Wiring — that integration
-    # is progressive. For M3, simply validating the config + surfacing it in logs
-    # is enough to demonstrate the invariant enforcement.)
     if yolo.enabled:
         print(f"YOLO mode enabled: sandbox={yolo.sandbox_tier} max_cost=${yolo.max_cost} "
               f"max_inconclusive={yolo.max_inconclusive} vroom_severity={yolo.vroom_severity}")
@@ -113,6 +110,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         max_iterations=args.max_iterations,
         disabled_gates=set(args.no_gate),
         sandbox_tier=sandbox_tier,
+        yolo=yolo,  # NEW
     )
 
     # If --vroom is set, spawn the Vroom daemon as a subprocess.
