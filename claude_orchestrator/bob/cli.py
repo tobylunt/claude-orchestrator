@@ -95,6 +95,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
         sandbox_tier=sandbox_tier,
     )
     coord.run(RunScope(includes_duplo=True))
+    if args.vroom:
+        print("note: --vroom flag set; full Vroom daemon integration ships in M4. "
+              "Use `bob vroom` standalone for now.")
     return 0
 
 
@@ -148,6 +151,108 @@ def _cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_vroom_start(args: argparse.Namespace) -> int:
+    """Start the Vroom daemon in the foreground (blocking)."""
+    import time
+    from claude_orchestrator.bob.signals import install_handlers, is_shutdown_requested
+    from claude_orchestrator.bob.vroom.auditor_pool import AuditorPool
+    from claude_orchestrator.bob.vroom.coalescer import coalesce_findings
+    from claude_orchestrator.bob.vroom.daemon import VroomDaemon
+    from claude_orchestrator.bob.vroom.auditors.semgrep import SemgrepAuditor
+    from claude_orchestrator.bob.vroom.auditors.llm_stubs import (
+        ClaudeArchitectAuditorStub,
+        CodexSecurityAuditorStub,
+    )
+
+    project_root = Path(args.project).resolve()
+    if not project_root.exists():
+        print(f"error: project root not found: {project_root}", file=sys.stderr)
+        return 2
+
+    install_handlers()
+
+    pool = AuditorPool([
+        SemgrepAuditor(),
+        ClaudeArchitectAuditorStub(),
+        CodexSecurityAuditorStub(),
+    ])
+
+    def audit_cycle():
+        findings = pool.run(workspace=project_root, changed_files=[])
+        clusters = coalesce_findings(findings)
+        # M4: write to findings.jsonl + spawn fix-loops; for M3 just print.
+        print(f"vroom cycle: {len(findings)} raw findings, {len(clusters)} clusters")
+        return clusters
+
+    daemon = VroomDaemon(
+        project_root=project_root,
+        audit_cycle=audit_cycle,
+        timer_interval_s=args.interval,
+    )
+    daemon.write_pid()
+    print(f"vroom daemon started (pid: {os.getpid()}, interval: {args.interval}s)")
+    print("Ctrl-C to stop")
+
+    try:
+        while not is_shutdown_requested():
+            daemon.run_one_iteration()
+            time.sleep(min(args.interval, 5))
+    finally:
+        daemon.remove_pid()
+    print("vroom daemon stopped")
+    return 0
+
+
+def _cmd_vroom_stop(args: argparse.Namespace) -> int:
+    """Stop the running Vroom daemon by sending SIGTERM."""
+    import signal as signal_mod
+    project_root = Path(args.project).resolve()
+    pid_path = project_root / ".bob" / "vroom.pid"
+    if not pid_path.exists():
+        print(f"no Vroom daemon running (no {pid_path})")
+        return 1
+    try:
+        pid = int(pid_path.read_text().strip())
+    except ValueError:
+        print(f"malformed pid file: {pid_path}", file=sys.stderr)
+        return 2
+
+    try:
+        os.kill(pid, signal_mod.SIGTERM)
+        print(f"sent SIGTERM to vroom daemon (pid: {pid})")
+        return 0
+    except ProcessLookupError:
+        print(f"vroom daemon (pid {pid}) is already dead; cleaning up pid file")
+        pid_path.unlink(missing_ok=True)
+        return 0
+
+
+def _cmd_vroom_now(args: argparse.Namespace) -> int:
+    """Run one audit cycle synchronously and exit."""
+    from claude_orchestrator.bob.vroom.auditor_pool import AuditorPool
+    from claude_orchestrator.bob.vroom.coalescer import coalesce_findings
+    from claude_orchestrator.bob.vroom.auditors.semgrep import SemgrepAuditor
+    from claude_orchestrator.bob.vroom.auditors.llm_stubs import (
+        ClaudeArchitectAuditorStub,
+        CodexSecurityAuditorStub,
+    )
+
+    project_root = Path(args.project).resolve()
+    pool = AuditorPool([
+        SemgrepAuditor(),
+        ClaudeArchitectAuditorStub(),
+        CodexSecurityAuditorStub(),
+    ])
+    findings = pool.run(workspace=project_root, changed_files=[])
+    clusters = coalesce_findings(findings)
+    print(f"vroom cycle complete: {len(findings)} raw findings → {len(clusters)} clusters")
+    for c in clusters[:10]:  # show top 10 by severity
+        primary = c.findings[0]
+        print(f"  [{c.severity}] {primary.rule_id} at {primary.location.uri}:{primary.location.start_line} "
+              f"(consensus {c.consensus_count})")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="bob")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -168,6 +273,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,  # None means "fall back to env var or default"
         help="sandbox tier (default: host; or BOB_SANDBOX_TIER env var)",
     )
+    run.add_argument(
+        "--vroom",
+        action="store_true",
+        help="run continuous Vroom audit loop in parallel with the feature loop",
+    )
     run.set_defaults(func=_cmd_run)
 
     status = sub.add_parser("status", help="show current Bob state")
@@ -178,6 +288,22 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("--inputs", required=True,
                           help="path to a markdown spec")
     validate.set_defaults(func=_cmd_validate)
+
+    vroom = sub.add_parser("vroom", help="run/stop the Vroom audit daemon")
+    vroom_sub = vroom.add_subparsers(dest="vroom_cmd", required=False)
+
+    now = vroom_sub.add_parser("now", help="trigger one Vroom cycle and exit")
+    now.add_argument("--project", default=".", help="project root (default: cwd)")
+    now.set_defaults(func=_cmd_vroom_now)
+
+    stop = vroom_sub.add_parser("stop", help="stop the running Vroom daemon")
+    stop.add_argument("--project", default=".", help="project root (default: cwd)")
+    stop.set_defaults(func=_cmd_vroom_stop)
+
+    # Default action when `bob vroom` is invoked without a subcommand: start the daemon.
+    vroom.add_argument("--project", default=".", help="project root (default: cwd)")
+    vroom.add_argument("--interval", type=int, default=1800, help="seconds between timer-driven cycles (default: 1800)")
+    vroom.set_defaults(func=_cmd_vroom_start)
 
     return parser
 

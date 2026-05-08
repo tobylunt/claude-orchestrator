@@ -127,3 +127,44 @@ def test_orchestrate_bob_validate_fails_on_malformed_spec(tmp_path: Path):
     out = (result.stdout + result.stderr).lower()
     assert "title" in out
     assert "traceback" not in out
+
+
+def test_orchestrate_bob_vroom_help():
+    result = subprocess.run(
+        [sys.executable, "-m", "claude_orchestrator.bob.cli", "vroom", "--help"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0
+    assert "vroom" in result.stdout.lower()
+
+
+def test_orchestrate_bob_vroom_now_smoke(tmp_path: Path):
+    """`bob vroom now` should run one cycle and exit."""
+    result = subprocess.run(
+        [sys.executable, "-m", "claude_orchestrator.bob.cli", "vroom", "now",
+         "--project", str(tmp_path)],
+        capture_output=True, text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0
+    assert "vroom cycle complete" in result.stdout.lower() or "0 raw findings" in result.stdout
+
+
+def test_orchestrate_bob_vroom_stop_when_no_daemon(tmp_path: Path):
+    """`bob vroom stop` when no daemon is running should exit 1 with a message."""
+    result = subprocess.run(
+        [sys.executable, "-m", "claude_orchestrator.bob.cli", "vroom", "stop",
+         "--project", str(tmp_path)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 1
+    assert "no vroom daemon" in result.stdout.lower()
+
+
+def test_orchestrate_bob_run_help_mentions_vroom():
+    result = subprocess.run(
+        [sys.executable, "-m", "claude_orchestrator.bob.cli", "run", "--help"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0
+    assert "--vroom" in result.stdout
