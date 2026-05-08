@@ -106,3 +106,89 @@ def test_docker_executor_real_smoke(tmp_path: Path):
     # hello-world exits 0 and prints a banner.
     assert result.returncode == 0
     assert "hello" in result.stdout.lower() or "hello" in result.stderr.lower()
+
+
+def test_docker_executor_uses_bob_dockerfile_when_present(tmp_path: Path):
+    """If <project>/bob.dockerfile exists, DockerExecutor should build from it."""
+    dockerfile = tmp_path / "bob.dockerfile"
+    dockerfile.write_text("FROM python:3.10-slim\nRUN echo hi\n")
+
+    captured = []
+    def capture(args, **kwargs):
+        captured.append(args)
+        from subprocess import CompletedProcess
+        # Simulate `docker build` returning the new image hash, then `docker run`.
+        return CompletedProcess(args, 0, stdout="sha256:abc123\n", stderr="")
+
+    with patch("subprocess.run", side_effect=capture):
+        executor = DockerExecutor(image="python:3.10-slim", dockerfile=dockerfile)
+        executor.run(["echo", "hi"], cwd=tmp_path, env=None, timeout=30)
+
+    # First call should be `docker build`, second should be `docker run` with the built image.
+    assert len(captured) >= 2
+    build_call = captured[0]
+    assert "docker" in build_call and "build" in build_call
+    # Path to dockerfile should be passed
+    dockerfile_args = [str(a) for a in build_call]
+    assert "-f" in dockerfile_args or "--file" in dockerfile_args
+    assert any(str(dockerfile) in a for a in dockerfile_args)
+
+
+def test_docker_executor_passes_network_arg_when_configured(tmp_path: Path):
+    """If network is configured, --network flag should be passed."""
+    captured = []
+    def capture(args, **kwargs):
+        captured.append(args)
+        from subprocess import CompletedProcess
+        return CompletedProcess(args, 0, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=capture):
+        executor = DockerExecutor(image="python:3.10-slim", network="bob-allowlist")
+        executor.run(["echo", "hi"], cwd=tmp_path, env=None, timeout=30)
+
+    args = captured[0]
+    assert "--network" in args
+    idx = args.index("--network")
+    assert args[idx + 1] == "bob-allowlist"
+
+
+def test_docker_executor_adds_default_allowlist_hosts(tmp_path: Path):
+    """When no custom network is provided but allowlist=True, Docker uses --add-host
+    entries for the default allowlist (Anthropic, OpenAI, GitHub, npm, PyPI).
+    """
+    captured = []
+    def capture(args, **kwargs):
+        captured.append(args)
+        from subprocess import CompletedProcess
+        return CompletedProcess(args, 0, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=capture):
+        executor = DockerExecutor(
+            image="python:3.10-slim",
+            apply_default_allowlist=True,
+        )
+        executor.run(["echo", "hi"], cwd=tmp_path, env=None, timeout=30)
+
+    args = captured[0]
+    args_str = " ".join(args)
+    # Default allowlist should include Anthropic and GitHub at minimum.
+    # We don't pin exact IPs (they change); we test the flag count is >= 2.
+    add_host_count = sum(1 for a in args if a == "--add-host")
+    assert add_host_count >= 2, \
+        f"expected >=2 --add-host entries; got args: {args}"
+
+
+def test_docker_executor_default_no_allowlist(tmp_path: Path):
+    """Default behavior: no allowlist applied, no --add-host entries."""
+    captured = []
+    def capture(args, **kwargs):
+        captured.append(args)
+        from subprocess import CompletedProcess
+        return CompletedProcess(args, 0, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=capture):
+        executor = DockerExecutor(image="python:3.10-slim")
+        executor.run(["echo", "hi"], cwd=tmp_path, env=None, timeout=30)
+
+    args = captured[0]
+    assert "--add-host" not in args

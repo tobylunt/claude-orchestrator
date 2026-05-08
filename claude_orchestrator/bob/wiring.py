@@ -91,7 +91,7 @@ def build_verifier_registry() -> VerifierRegistry:
     return reg
 
 
-def _build_executor(tier: str):
+def _build_executor(tier: str, project_root: Path | None = None):
     """Construct the right SubprocessExecutor for the given sandbox tier."""
     if tier == "host":
         from claude_orchestrator.bob.sandbox.host import HostExecutor
@@ -101,7 +101,22 @@ def _build_executor(tier: str):
         image = os.environ.get("BOB_DOCKER_IMAGE", "python:3.10-slim")
         cpus = float(os.environ.get("BOB_DOCKER_CPUS", "4"))
         memory = os.environ.get("BOB_DOCKER_MEMORY", "8g")
-        return DockerExecutor(image=image, cpus=cpus, memory=memory)
+        network = os.environ.get("BOB_DOCKER_NETWORK")  # None means default
+        apply_allowlist = os.environ.get("BOB_DOCKER_ALLOWLIST", "0") == "1"
+
+        # Auto-detect bob.dockerfile in project root.
+        dockerfile = None
+        if project_root is not None:
+            candidate = project_root / "bob.dockerfile"
+            if candidate.exists():
+                dockerfile = candidate
+
+        return DockerExecutor(
+            image=image, cpus=cpus, memory=memory,
+            network=network,
+            dockerfile=dockerfile,
+            apply_default_allowlist=apply_allowlist,
+        )
     raise ValueError(f"unknown sandbox tier: {tier!r} (must be host|docker)")
 
 
@@ -121,7 +136,7 @@ def build_coordinator(
     The returned Coordinator is ready to call .run(RunScope(includes_duplo=True)).
     """
     registry = build_verifier_registry()
-    executor = _build_executor(sandbox_tier)
+    executor = _build_executor(sandbox_tier, project_root=project_root)
     runner = McLoopRunner(
         claude_cmd=claude_cmd,
         max_iterations=max_iterations,
