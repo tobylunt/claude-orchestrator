@@ -104,6 +104,12 @@ def _cmd_run(args: argparse.Namespace) -> int:
         print(f"YOLO mode enabled: sandbox={yolo.sandbox_tier} max_cost=${yolo.max_cost} "
               f"max_inconclusive={yolo.max_inconclusive} vroom_severity={yolo.vroom_severity}")
 
+    from claude_orchestrator.bob.observability import setup_tracing
+    setup_tracing(
+        service_name="bob",
+        otlp_endpoint=args.otel_endpoint,
+    )
+
     coord = build_coordinator(
         project_root=project_root,
         spec_path=spec_path,
@@ -457,6 +463,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--yolo",
         action="store_true",
         help="enable YOLO mode (unattended; requires --sandbox docker and --max-cost)",
+    )
+    run.add_argument(
+        "--otel-endpoint",
+        default=None,
+        help="OTLP traces endpoint (default: $OTEL_EXPORTER_OTLP_ENDPOINT). Example: http://localhost:6006/v1/traces",
     )
     run.set_defaults(func=_cmd_run)
 

@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Protocol
 
+from claude_orchestrator.bob.observability import span
 from claude_orchestrator.bob.orchestra.stability import (
     StabilityDetector,
     StabilityVerdict,
@@ -57,40 +58,44 @@ class RealOrchestra:
         )
 
         for round_num in range(1, self.max_rounds + 1):
-            claude_msgs = self.claude.run(
-                prompt_base + f"\nRound {round_num}: defend or critique."
-            )
-            codex_msgs = self.codex.run(
-                prompt_base + f"\nRound {round_num}: critique adversarially."
-            )
-            judge_msgs = self.judge.run(
-                prompt_base
-                + f"\nClaude: {claude_msgs[-1]['content']}\n"
-                + f"Codex: {codex_msgs[-1]['content']}\n"
-                + f"Round {round_num}: synthesize."
-            )
-
-            judge_final = judge_msgs[-1]
-            decision = judge_final.get("decision", "abstain")
-            confidence = float(judge_final.get("confidence", 0.0))
-
-            rounds.append({
+            with span("bob.orchestra.round", attrs={
+                "feature_id": feature.id,
                 "round": round_num,
-                "claude": claude_msgs[-1]["content"],
-                "codex": codex_msgs[-1]["content"],
-                "judge": judge_final["content"],
-                "decision": decision,
-                "confidence": confidence,
-            })
-            latest_decision = decision
-            latest_confidence = confidence
-            latest_reasoning = judge_final["content"]
+            }):
+                claude_msgs = self.claude.run(
+                    prompt_base + f"\nRound {round_num}: defend or critique."
+                )
+                codex_msgs = self.codex.run(
+                    prompt_base + f"\nRound {round_num}: critique adversarially."
+                )
+                judge_msgs = self.judge.run(
+                    prompt_base
+                    + f"\nClaude: {claude_msgs[-1]['content']}\n"
+                    + f"Codex: {codex_msgs[-1]['content']}\n"
+                    + f"Round {round_num}: synthesize."
+                )
 
-            verdict = self.detector.update([confidence])
-            if verdict == StabilityVerdict.STABLE:
-                if decision in ("approve", "reject"):
-                    break
-                continue
+                judge_final = judge_msgs[-1]
+                decision = judge_final.get("decision", "abstain")
+                confidence = float(judge_final.get("confidence", 0.0))
+
+                rounds.append({
+                    "round": round_num,
+                    "claude": claude_msgs[-1]["content"],
+                    "codex": codex_msgs[-1]["content"],
+                    "judge": judge_final["content"],
+                    "decision": decision,
+                    "confidence": confidence,
+                })
+                latest_decision = decision
+                latest_confidence = confidence
+                latest_reasoning = judge_final["content"]
+
+                verdict = self.detector.update([confidence])
+                if verdict == StabilityVerdict.STABLE:
+                    if decision in ("approve", "reject"):
+                        break
+                    continue
 
         if latest_decision not in ("approve", "reject"):
             latest_decision = "abstain"

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from claude_orchestrator.bob.observability import span
 from claude_orchestrator.bob.state_io import append_jsonl
 from claude_orchestrator.bob.vroom.auditor_pool import AuditorPool
 from claude_orchestrator.bob.vroom.coalescer import (
@@ -50,6 +51,10 @@ class VroomAuditCycle:
         """Run one cycle. Returns the coalesced clusters (post-triage actions
         already applied).
         """
+        with span("bob.vroom.cycle"):
+            return self._run_inner(changed_files=changed_files)
+
+    def _run_inner(self, *, changed_files: list[Path] | None = None) -> list[FindingCluster]:
         # 1. Collect findings.
         findings = self.auditor_pool.run(
             workspace=self.project_root,

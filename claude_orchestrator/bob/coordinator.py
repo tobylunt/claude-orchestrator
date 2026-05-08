@@ -42,6 +42,7 @@ from claude_orchestrator.bob.worktree import (
     add_worktree,
     remove_worktree,
 )
+from claude_orchestrator.bob.observability import span
 from claude_orchestrator.models import (
     Feature,
     FeatureStatus,
@@ -97,6 +98,10 @@ class Coordinator:
 
     def run(self, scope: RunScope) -> None:
         run_id = str(uuid.uuid4())
+        with span("bob.run", attrs={"run_id": run_id}):
+            self._run_inner(scope, run_id)
+
+    def _run_inner(self, scope: RunScope, run_id: str) -> None:
         self._set_cursor("starting", None, run_id)
         self._log_event("run_started", {"run_id": run_id})
 
@@ -176,6 +181,14 @@ class Coordinator:
             # will be picked up).
 
     def _run_feature(self, feature: Feature, feature_dir: Path, run_id: str) -> None:
+        with span("bob.feature", attrs={
+            "feature_id": feature.id,
+            "feature_name": feature.name,
+            "task_type": str(feature.task_type),
+        }):
+            self._run_feature_inner(feature, feature_dir, run_id)
+
+    def _run_feature_inner(self, feature: Feature, feature_dir: Path, run_id: str) -> None:
         self._set_cursor("mcloop", feature.id, run_id)
         self._log_event("feature_started", {"feature_id": feature.id, "name": feature.name})
 

@@ -32,6 +32,7 @@ else:
 
 from datetime import datetime
 
+from claude_orchestrator.bob.observability import span
 from claude_orchestrator.bob.sandbox.executor import SubprocessExecutor
 from claude_orchestrator.bob.sandbox.host import HostExecutor
 from claude_orchestrator.bob.state_io import append_jsonl
@@ -112,92 +113,96 @@ class McLoopRunner:
         consecutive_inconclusive = 0  # NEW
 
         for i in range(1, self.max_iterations + 1):
-            try:
-                proc = self.executor.run(
-                    [self.claude_cmd, "-p", prompt,
-                     "--permission-mode", "bypassPermissions",
-                     "--output-format", "stream-json",
-                     "--include-partial-messages",
-                     "--verbose"],
-                    cwd=workspace,
-                    env=None,
-                    timeout=self.per_iteration_timeout_s,
-                )
-            except subprocess.TimeoutExpired:
-                return McLoopResult(
-                    outcome="error",
-                    iterations=i,
-                    last_reason=f"claude -p timed out at iteration {i}",
-                    last_status=None,
-                )
-
-            stdout = proc.stdout
-
-            # Persist stdout + stderr for debugging.
-            log_path = feature_dir / f"iter-{i}.log"
-            log_content_parts = []
-            if proc.stdout:
-                log_content_parts.append("=== STDOUT ===")
-                log_content_parts.append(proc.stdout)
-            if proc.stderr:
-                log_content_parts.append("\n=== STDERR ===")
-                log_content_parts.append(proc.stderr)
-            if log_content_parts:
-                log_path.write_text("\n".join(log_content_parts))
-
-            verify_result = verifier.verify(workspace, feature)
-            append_jsonl(verifier_log, {
+            with span("bob.mcloop.iter", attrs={
+                "feature_id": feature.id,
                 "iteration": i,
-                "status": verify_result.status,
-                "reason": verify_result.reason[:1000],
-                "ts": datetime.now(UTC).isoformat(),
-            })
+            }):
+                try:
+                    proc = self.executor.run(
+                        [self.claude_cmd, "-p", prompt,
+                         "--permission-mode", "bypassPermissions",
+                         "--output-format", "stream-json",
+                         "--include-partial-messages",
+                         "--verbose"],
+                        cwd=workspace,
+                        env=None,
+                        timeout=self.per_iteration_timeout_s,
+                    )
+                except subprocess.TimeoutExpired:
+                    return McLoopResult(
+                        outcome="error",
+                        iterations=i,
+                        last_reason=f"claude -p timed out at iteration {i}",
+                        last_status=None,
+                    )
 
-            if verify_result.status == "inconclusive":
-                consecutive_inconclusive += 1
-                yolo_active = self.yolo is not None and self.yolo.enabled
-                if not yolo_active:
-                    # Default mode: halt loud on first Inconclusive.
+                stdout = proc.stdout
+
+                # Persist stdout + stderr for debugging.
+                log_path = feature_dir / f"iter-{i}.log"
+                log_content_parts = []
+                if proc.stdout:
+                    log_content_parts.append("=== STDOUT ===")
+                    log_content_parts.append(proc.stdout)
+                if proc.stderr:
+                    log_content_parts.append("\n=== STDERR ===")
+                    log_content_parts.append(proc.stderr)
+                if log_content_parts:
+                    log_path.write_text("\n".join(log_content_parts))
+
+                verify_result = verifier.verify(workspace, feature)
+                append_jsonl(verifier_log, {
+                    "iteration": i,
+                    "status": verify_result.status,
+                    "reason": verify_result.reason[:1000],
+                    "ts": datetime.now(UTC).isoformat(),
+                })
+
+                if verify_result.status == "inconclusive":
+                    consecutive_inconclusive += 1
+                    yolo_active = self.yolo is not None and self.yolo.enabled
+                    if not yolo_active:
+                        # Default mode: halt loud on first Inconclusive.
+                        return McLoopResult(
+                            outcome="halted_inconclusive",
+                            iterations=i,
+                            last_reason=verify_result.reason,
+                            last_status=verify_result.status,
+                        )
+                    # YOLO mode: bounded feedback. Halt only if we've hit the consecutive cap.
+                    if consecutive_inconclusive >= self.yolo.max_inconclusive:
+                        return McLoopResult(
+                            outcome="halted_inconclusive",
+                            iterations=i,
+                            last_reason=(
+                                f"YOLO halted after {consecutive_inconclusive} consecutive "
+                                f"Inconclusives (max={self.yolo.max_inconclusive}): "
+                                f"{verify_result.reason}"
+                            ),
+                            last_status=verify_result.status,
+                        )
+                    # Else: continue to next iteration. The verifier's reason becomes
+                    # context for the agent's next pass via the iter log.
+                else:
+                    # Reset the counter on any non-inconclusive verifier result.
+                    consecutive_inconclusive = 0
+
+                if _HALT_PROMISE_RE.search(stdout):
                     return McLoopResult(
                         outcome="halted_inconclusive",
                         iterations=i,
-                        last_reason=verify_result.reason,
+                        last_reason="agent emitted HALT_INCONCLUSIVE",
                         last_status=verify_result.status,
                     )
-                # YOLO mode: bounded feedback. Halt only if we've hit the consecutive cap.
-                if consecutive_inconclusive >= self.yolo.max_inconclusive:
+
+                if _EXIT_PROMISE_RE.search(stdout) and verify_result.status == "ok":
                     return McLoopResult(
-                        outcome="halted_inconclusive",
+                        outcome="exit_signal",
                         iterations=i,
-                        last_reason=(
-                            f"YOLO halted after {consecutive_inconclusive} consecutive "
-                            f"Inconclusives (max={self.yolo.max_inconclusive}): "
-                            f"{verify_result.reason}"
-                        ),
-                        last_status=verify_result.status,
+                        last_reason="agent emitted EXIT_SIGNAL with verifier ok",
+                        last_status="ok",
                     )
-                # Else: continue to next iteration. The verifier's reason becomes
-                # context for the agent's next pass via the iter log.
-            else:
-                # Reset the counter on any non-inconclusive verifier result.
-                consecutive_inconclusive = 0
-
-            if _HALT_PROMISE_RE.search(stdout):
-                return McLoopResult(
-                    outcome="halted_inconclusive",
-                    iterations=i,
-                    last_reason="agent emitted HALT_INCONCLUSIVE",
-                    last_status=verify_result.status,
-                )
-
-            if _EXIT_PROMISE_RE.search(stdout) and verify_result.status == "ok":
-                return McLoopResult(
-                    outcome="exit_signal",
-                    iterations=i,
-                    last_reason="agent emitted EXIT_SIGNAL with verifier ok",
-                    last_status="ok",
-                )
-            # Otherwise, continue to next iteration.
+                # Otherwise, continue to next iteration.
 
         return McLoopResult(
             outcome="max_iterations",
