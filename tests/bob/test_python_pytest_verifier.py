@@ -75,3 +75,22 @@ def test_verify_returns_inconclusive_when_no_tests(workspace_with_no_tests: Path
     result = v.verify(workspace_with_no_tests, _feature())
     assert result.status == "inconclusive"
     assert "no tests collected" in result.reason.lower()
+
+
+def test_verify_fails_on_collection_error(tmp_path: Path):
+    """When a test module has an ImportError, pytest exits 2.
+    The verifier should map that to 'fail' (the agent can fix it),
+    NOT 'inconclusive' (which would halt the loop unnecessarily).
+    """
+    # Test references a function in a module that doesn't have it
+    (tmp_path / "calc.py").write_text("# empty\n")
+    (tmp_path / "test_calc.py").write_text(
+        "from calc import add\n"
+        "def test_one():\n"
+        "    assert add(1, 1) == 2\n"
+    )
+    v = PythonPytestVerifier()
+    result = v.verify(tmp_path, _feature())
+    assert result.status == "fail", \
+        f"ImportError on collection should be fail, got {result.status}"
+    assert "ImportError" in result.reason or "import" in result.reason.lower() or "add" in result.reason

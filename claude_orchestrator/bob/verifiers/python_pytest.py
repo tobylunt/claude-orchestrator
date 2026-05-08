@@ -3,8 +3,11 @@
 Status mapping:
   pytest exit 0      -> ok
   pytest exit 1      -> fail (test failures)
+  pytest exit 2      -> fail (collection error / ImportError / interrupted)
+  pytest exit 3      -> inconclusive (internal pytest error)
+  pytest exit 4      -> inconclusive (command-line usage error)
   pytest exit 5      -> inconclusive (no tests collected)
-  anything else      -> inconclusive (collection error / config error / etc.)
+  anything else      -> inconclusive (non-standard exit)
 """
 
 from __future__ import annotations
@@ -65,6 +68,16 @@ class PythonPytestVerifier:
                 reason=output[-2000:],  # tail to keep the agent's context tight
                 artifacts=[],
                 coverage_notes=None,
+            )
+        if rc == 2:
+            # Collection error / ImportError / test execution interrupted.
+            # Map to 'fail' (the agent can fix the import). Halting loud
+            # here would prevent greenfield code from making progress.
+            return VerifyResult(
+                status="fail",
+                reason=output[-2000:],
+                artifacts=[],
+                coverage_notes="pytest exit 2 — collection/import error. The agent should address before iterating.",
             )
         if rc == 5:
             return VerifyResult(
