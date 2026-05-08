@@ -114,10 +114,49 @@ def _cmd_run(args: argparse.Namespace) -> int:
         disabled_gates=set(args.no_gate),
         sandbox_tier=sandbox_tier,
     )
-    coord.run(RunScope(includes_duplo=True))
+
+    # If --vroom is set, spawn the Vroom daemon as a subprocess.
+    vroom_proc = None
     if args.vroom:
-        print("note: --vroom flag set; full Vroom daemon integration ships in M4. "
-              "Use `bob vroom` standalone for now.")
+        import subprocess as _subprocess
+        import sys as _sys
+        vroom_cmd = [
+            _sys.executable, "-m", "claude_orchestrator.bob.cli",
+            "vroom",
+            "--project", str(project_root),
+            "--interval", "1800",
+        ]
+        # Pass through stub env vars so the child uses the same offline mode if any.
+        child_env = os.environ.copy()
+        vroom_proc = _subprocess.Popen(
+            vroom_cmd,
+            stdout=_subprocess.DEVNULL,
+            stderr=_subprocess.DEVNULL,
+            env=child_env,
+            start_new_session=True,
+        )
+        print(f"-> Vroom daemon spawned (pid: {vroom_proc.pid})")
+
+        def _stop_vroom():
+            if vroom_proc and vroom_proc.poll() is None:
+                # SIGTERM to the process group so any sub-children also die.
+                try:
+                    import signal as _signal
+                    os.killpg(os.getpgid(vroom_proc.pid), _signal.SIGTERM)
+                except (ProcessLookupError, PermissionError):
+                    pass
+                try:
+                    vroom_proc.wait(timeout=5)
+                except _subprocess.TimeoutExpired:
+                    try:
+                        import signal as _signal
+                        os.killpg(os.getpgid(vroom_proc.pid), _signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError):
+                        pass
+
+        register_cleanup(_stop_vroom)
+
+    coord.run(RunScope(includes_duplo=True))
     return 0
 
 

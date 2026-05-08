@@ -205,3 +205,58 @@ def test_orchestrate_bob_run_yolo_requires_max_cost(tmp_path: Path):
     assert result.returncode != 0
     out = (result.stdout + result.stderr).lower()
     assert "max_cost" in out or "max-cost" in out
+
+
+def test_orchestrate_bob_run_vroom_spawns_subprocess(tmp_path: Path, monkeypatch):
+    """`bob run --vroom` should start the Vroom daemon subprocess and clean it up on exit.
+
+    We use BOB_USE_STUB_ORCHESTRA + a fake claude on PATH to keep the run fast.
+    The test verifies a vroom.pid file appears mid-run and is cleaned up after exit.
+    """
+    import os
+    sp = subprocess
+
+    # Set up a tiny git repo + spec.
+    sp.run(["git", "init", "-b", "main", str(tmp_path)], check=True)
+    (tmp_path / "test_smoke.py").write_text("def test_x(): assert True\n")
+    sp.run(["git", "-C", str(tmp_path), "add", "."], check=True)
+    sp.run(["git", "-C", str(tmp_path), "-c", "user.email=t@t.com",
+            "-c", "user.name=T", "commit", "-m", "init"], check=True)
+
+    spec = tmp_path / "spec.md"
+    spec.write_text(
+        "# T\n## Motivation\nm\n## Features\n### F1: noop\n"
+        "- task_type: library\n- verifier: python_pytest\n"
+        "- success_criteria:\n  - x\n- description: noop\n"
+    )
+
+    fake_dir = tmp_path / "fake-bin"
+    fake_dir.mkdir()
+    fake = fake_dir / "claude"
+    fake.write_text(
+        '#!/bin/sh\necho "<promise>EXIT_SIGNAL</promise>"\n'
+    )
+    fake.chmod(0o755)
+
+    env = {
+        **os.environ,
+        "PATH": f"{fake_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+        "BOB_USE_STUB_ORCHESTRA": "1",
+        "BOB_USE_STUB_VROOM": "1",  # avoid real API calls in vroom subprocess
+    }
+    result = sp.run(
+        [sys.executable, "-m", "claude_orchestrator.bob.cli", "run",
+         "--project", str(tmp_path),
+         "--inputs", str(spec),
+         "--vroom",
+         "--max-iterations", "1",
+         "--no-gate", "post_duplo"],
+        capture_output=True, text=True, env=env, timeout=120,
+    )
+    assert result.returncode == 0, f"bob run failed:\n{result.stdout}\n{result.stderr}"
+    out = result.stdout + result.stderr
+    # Some signal that the vroom subprocess was actually spawned and shut down.
+    assert ("vroom" in out.lower())  # progress / banner / shutdown message
+
+    # After bob run exits, the vroom.pid file should be gone (clean shutdown).
+    assert not (tmp_path / ".bob" / "vroom.pid").exists()
