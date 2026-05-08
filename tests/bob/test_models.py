@@ -139,3 +139,28 @@ def test_feature_model_dump_emits_strings_for_enums():
     assert dumped["task_type"] == "library"
     # And it must json-serialize cleanly:
     assert json.loads(json.dumps(dumped, default=str))["status"] == "pending"
+
+
+def test_finding_accepts_new_vroom_states():
+    f = Finding(
+        rule_id="r",
+        severity="medium",
+        location=SARIFLocation(uri="x.py", start_line=1),
+        message="m",
+        proposed_fix=None,
+        auditor="a",
+        fingerprint="fp",
+        status="merging",
+    )
+    assert f.status == "merging"
+    f2 = Finding(
+        rule_id="r",
+        severity="medium",
+        location=SARIFLocation(uri="x.py", start_line=1),
+        message="m",
+        proposed_fix=None,
+        auditor="a",
+        fingerprint="fp",
+        status="merged",
+    )
+    assert f2.status == "merged"

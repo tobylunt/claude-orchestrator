@@ -190,4 +190,4 @@ class Finding(BaseModel):
     proposed_fix: Path | None = None
     auditor: str
     fingerprint: str
-    status: Literal["open", "in_progress", "resolved", "wontfix"] = "open"
+    status: Literal["open", "in_progress", "merging", "merged", "resolved", "wontfix"] = "open"
