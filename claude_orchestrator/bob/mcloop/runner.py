@@ -105,7 +105,9 @@ class McLoopRunner:
             try:
                 proc = subprocess.run(
                     [self.claude_cmd, "-p", prompt,
-                     "--permission-mode", "bypassPermissions"],
+                     "--permission-mode", "bypassPermissions",
+                     "--output-format", "stream-json",
+                     "--include-partial-messages"],
                     cwd=str(workspace),
                     capture_output=True,
                     text=True,

@@ -281,6 +281,46 @@ def test_runner_persists_per_iteration_log(tmp_path: Path):
     assert "<promise>EXIT_SIGNAL</promise>" in log
 
 
+def test_runner_passes_stream_json_output_format(tmp_path: Path, monkeypatch):
+    """McLoop should pass --output-format stream-json so iter-N.log captures
+    the full tool-use trace, not just claude's final text reply."""
+    feature = _feature()
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    feature_dir = tmp_path / ".bob" / "features" / "001-t"
+    feature_dir.mkdir(parents=True)
+    (feature_dir / "spec.md").write_text("")
+    (feature_dir / "activity.md").write_text("")
+    (feature_dir / "failed_attempts.md").write_text("")
+    (feature_dir / "verifier-results.jsonl").write_text("")
+    master_spec = tmp_path / ".bob" / "spec.md"
+    master_spec.write_text("")
+
+    captured_args: list = []
+    real_run = subprocess.run
+
+    def capture(args, **kwargs):
+        captured_args.append(args)
+        from subprocess import CompletedProcess
+        return CompletedProcess(args, 0, stdout="<promise>EXIT_SIGNAL</promise>", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", capture)
+    verifier = FakeVerifier([
+        VerifyResult(status="ok", reason="", artifacts=[], coverage_notes=None),
+    ])
+    runner = McLoopRunner(claude_cmd="claude", max_iterations=1,
+                         per_iteration_timeout_s=10)
+    runner.run(
+        feature=feature, workspace=workspace,
+        master_spec=master_spec, feature_dir=feature_dir, verifier=verifier,
+    )
+
+    args = captured_args[0]
+    assert "--output-format" in args, f"missing output-format in: {args}"
+    idx = args.index("--output-format")
+    assert args[idx + 1] == "stream-json"
+
+
 def test_runner_logs_each_iteration_separately(tmp_path: Path):
     """Multiple iterations produce iter-1.log, iter-2.log, etc."""
     feature = _feature()
