@@ -65,3 +65,54 @@ def test_orchestrate_bob_run_rejects_missing_spec(tmp_path: Path):
     )
     assert result.returncode != 0
     assert "not found" in (result.stderr + result.stdout).lower()
+
+
+def test_orchestrate_bob_run_handles_malformed_spec(tmp_path: Path):
+    """Malformed spec produces clean error, not a traceback."""
+    spec = tmp_path / "spec.md"
+    spec.write_text("## Motivation\nno title\n## Features\n")  # missing # Title
+
+    result = subprocess.run(
+        [sys.executable, "-m", "claude_orchestrator.bob.cli", "run",
+         "--project", str(tmp_path),
+         "--inputs", str(spec)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode != 0
+    out = (result.stdout + result.stderr).lower()
+    assert "title" in out  # the parse error message
+    assert "traceback" not in out  # NO traceback
+
+
+def test_orchestrate_bob_validate_succeeds_on_valid_spec(tmp_path: Path):
+    """`bob validate` succeeds on a well-formed spec."""
+    spec = tmp_path / "spec.md"
+    spec.write_text(
+        "# Demo\n## Motivation\nm\n## Features\n"
+        "### F1: a\n- task_type: library\n- verifier: python_pytest\n"
+        "- success_criteria:\n  - x\n- description: a\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-m", "claude_orchestrator.bob.cli", "validate",
+         "--inputs", str(spec)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0
+    assert "demo" in result.stdout.lower()
+    assert "1 feature" in result.stdout.lower()
+
+
+def test_orchestrate_bob_validate_fails_on_malformed_spec(tmp_path: Path):
+    """`bob validate` reports parse errors with non-zero exit code."""
+    spec = tmp_path / "spec.md"
+    spec.write_text("## Motivation\nno title\n## Features\n")
+
+    result = subprocess.run(
+        [sys.executable, "-m", "claude_orchestrator.bob.cli", "validate",
+         "--inputs", str(spec)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode != 0
+    out = (result.stdout + result.stderr).lower()
+    assert "title" in out
+    assert "traceback" not in out

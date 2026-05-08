@@ -36,6 +36,17 @@ def _cmd_run(args: argparse.Namespace) -> int:
         print(f"error: input spec not found: {spec_path}", file=sys.stderr)
         return 2
 
+    # Pre-flight parse so malformed specs fail cleanly without acquiring the lock.
+    from claude_orchestrator.bob.duplo.markdown_parser import (
+        SpecParseError,
+        parse_markdown_spec,
+    )
+    try:
+        parse_markdown_spec(spec_path)
+    except SpecParseError as e:
+        print(f"spec error: {e}", file=sys.stderr)
+        return 4
+
     bob_dir = project_root / ".bob"
     install_handlers()
 
@@ -65,6 +76,33 @@ def _cmd_run(args: argparse.Namespace) -> int:
         disabled_gates=set(args.no_gate),
     )
     coord.run(RunScope(includes_duplo=True))
+    return 0
+
+
+def _cmd_validate(args: argparse.Namespace) -> int:
+    """Parse the spec and report errors cleanly, without acquiring any lock."""
+    from claude_orchestrator.bob.duplo.markdown_parser import (
+        SpecParseError,
+        parse_markdown_spec,
+    )
+
+    spec_path = Path(args.inputs).resolve()
+    if not spec_path.is_file():
+        print(f"error: input spec not found: {spec_path}", file=sys.stderr)
+        return 2
+
+    try:
+        spec = parse_markdown_spec(spec_path)
+    except SpecParseError as e:
+        print(f"spec error: {e}", file=sys.stderr)
+        return 4
+
+    print(f"OK — spec '{spec.title}' parsed successfully")
+    print(f"      motivation: {spec.motivation}")
+    print(f"      {len(spec.features)} feature(s):")
+    for f in spec.features:
+        print(f"        [{f.id}] {f.name} (task_type={f.task_type}, "
+              f"verifier={f.verification_plan.verifier_id})")
     return 0
 
 
@@ -110,6 +148,11 @@ def build_parser() -> argparse.ArgumentParser:
     status = sub.add_parser("status", help="show current Bob state")
     status.add_argument("--project", default=".", help="project root (default: cwd)")
     status.set_defaults(func=_cmd_status)
+
+    validate = sub.add_parser("validate", help="parse and validate a spec file")
+    validate.add_argument("--inputs", required=True,
+                          help="path to a markdown spec")
+    validate.set_defaults(func=_cmd_validate)
 
     return parser
 
