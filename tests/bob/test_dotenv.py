@@ -68,3 +68,54 @@ def test_project_env_does_not_override_cwd_or_process(tmp_path: Path, monkeypatc
     load_env_files(project_root=project, cwd=cwd)
     # Project wins over cwd (project is more specific to the orchestration target).
     assert os.environ.get("BOB_TEST_BOTH") == "project"
+
+
+def test_load_user_level_env(tmp_path: Path, monkeypatch):
+    """A ~/.bob/.env (overridden via BOB_USER_ENV for tests) should be loaded."""
+    monkeypatch.delenv("BOB_TEST_USER_KEY", raising=False)
+    user_env = tmp_path / "user-env"
+    user_env.write_text("BOB_TEST_USER_KEY=from_user\n")
+    monkeypatch.setenv("BOB_USER_ENV", str(user_env))
+
+    load_env_files(project_root=None, cwd=None)
+    assert os.environ.get("BOB_TEST_USER_KEY") == "from_user"
+
+
+def test_project_env_overrides_user_env(tmp_path: Path, monkeypatch):
+    """Project .env should beat user-level .env when both set the same key."""
+    monkeypatch.delenv("BOB_TEST_PRECEDENCE", raising=False)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".env").write_text("BOB_TEST_PRECEDENCE=from_project\n")
+
+    user_env = tmp_path / "user-env"
+    user_env.write_text("BOB_TEST_PRECEDENCE=from_user\n")
+    monkeypatch.setenv("BOB_USER_ENV", str(user_env))
+
+    load_env_files(project_root=project, cwd=None)
+    assert os.environ.get("BOB_TEST_PRECEDENCE") == "from_project"
+
+
+def test_user_env_supplies_keys_when_no_project_env(tmp_path: Path, monkeypatch):
+    """If only the user-level .env is present, its keys still get loaded."""
+    monkeypatch.delenv("BOB_TEST_API_KEY", raising=False)
+    user_env = tmp_path / "user-env"
+    user_env.write_text("BOB_TEST_API_KEY=sk-user-only\n")
+    monkeypatch.setenv("BOB_USER_ENV", str(user_env))
+
+    project = tmp_path / "project"
+    project.mkdir()  # exists but no .env
+
+    load_env_files(project_root=project, cwd=tmp_path / "cwd-that-does-not-exist")
+    assert os.environ.get("BOB_TEST_API_KEY") == "sk-user-only"
+
+
+def test_process_env_overrides_user_env(tmp_path: Path, monkeypatch):
+    """Process env still wins, even over the user-level .env."""
+    user_env = tmp_path / "user-env"
+    user_env.write_text("BOB_TEST_PROCESS_WINS=from_user\n")
+    monkeypatch.setenv("BOB_USER_ENV", str(user_env))
+    monkeypatch.setenv("BOB_TEST_PROCESS_WINS", "from_process")
+
+    load_env_files(project_root=None, cwd=None)
+    assert os.environ["BOB_TEST_PROCESS_WINS"] == "from_process"
