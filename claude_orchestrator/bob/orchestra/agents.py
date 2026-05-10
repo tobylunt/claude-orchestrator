@@ -22,6 +22,8 @@ class AnthropicDebateAgent:
 
     def run(self, prompt: str) -> list[dict[str, Any]]:
         from anthropic import Anthropic
+        from claude_orchestrator.bob.cost_tracker import record_call_in_context
+
         client = Anthropic()
         response = client.messages.create(
             model=self.model,
@@ -29,6 +31,17 @@ class AnthropicDebateAgent:
             system=self.system,
             messages=[{"role": "user", "content": prompt}],
         )
+
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            record_call_in_context(
+                provider="anthropic",
+                model=self.model,
+                tokens_in=getattr(usage, "input_tokens", 0),
+                tokens_out=getattr(usage, "output_tokens", 0),
+                phase="orchestra",
+            )
+
         text = "".join(b.text for b in response.content if hasattr(b, "text"))
         return [self._parse_response(text)]
 
@@ -52,6 +65,8 @@ class OpenAIDebateAgent:
             from openai import OpenAI
         except ImportError:
             return [{"content": "openai SDK not installed", "decision": "abstain", "confidence": 0.0}]
+        from claude_orchestrator.bob.cost_tracker import record_call_in_context
+
         client = OpenAI()
         response = client.chat.completions.create(
             model=self.model,
@@ -62,6 +77,17 @@ class OpenAIDebateAgent:
                 {"role": "user", "content": prompt},
             ],
         )
+
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            record_call_in_context(
+                provider="openai",
+                model=self.model,
+                tokens_in=getattr(usage, "prompt_tokens", 0),
+                tokens_out=getattr(usage, "completion_tokens", 0),
+                phase="orchestra",
+            )
+
         text = response.choices[0].message.content or ""
         return [self._parse_response(text)]
 

@@ -83,6 +83,18 @@ class _ProductionAnthropicClient:
             max_tokens=4000,
             messages=[{"role": "user", "content": prompt}],
         )
+
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            from claude_orchestrator.bob.cost_tracker import record_call_in_context
+            record_call_in_context(
+                provider="anthropic",
+                model=self.model,
+                tokens_in=getattr(usage, "input_tokens", 0),
+                tokens_out=getattr(usage, "output_tokens", 0),
+                phase="vroom",
+            )
+
         text = "".join(b.text for b in response.content if hasattr(b, "text"))
         return text
 

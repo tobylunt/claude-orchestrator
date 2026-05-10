@@ -102,6 +102,9 @@ class Coordinator:
             self._run_inner(scope, run_id)
 
     def _run_inner(self, scope: RunScope, run_id: str) -> None:
+        from claude_orchestrator.bob.cost_tracker import set_run_context
+        set_run_context(run_id=run_id, bob_dir=self.bob_dir)
+
         self._set_cursor("starting", None, run_id)
         self._log_event("run_started", {"run_id": run_id})
 

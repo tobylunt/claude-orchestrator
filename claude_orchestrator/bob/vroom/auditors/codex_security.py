@@ -90,6 +90,18 @@ class _ProductionOpenAIClient:
                 {"role": "user", "content": user},
             ],
         )
+
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            from claude_orchestrator.bob.cost_tracker import record_call_in_context
+            record_call_in_context(
+                provider="openai",
+                model=self.model,
+                tokens_in=getattr(usage, "prompt_tokens", 0),
+                tokens_out=getattr(usage, "completion_tokens", 0),
+                phase="vroom",
+            )
+
         return response.choices[0].message.content or '{"findings": []}'
 
 

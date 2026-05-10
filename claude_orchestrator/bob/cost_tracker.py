@@ -12,6 +12,7 @@ Aggregation produces totals by run, by provider, by phase, etc.
 
 from __future__ import annotations
 
+import contextvars
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -94,6 +95,45 @@ def record_call(
         "feature_id": feature_id,
     }
     append_jsonl(bob_dir / "costs.jsonl", record)
+
+
+_current_run_id: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "bob_run_id", default="(no_run)"
+)
+_current_bob_dir: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
+    "bob_dir", default=None
+)
+
+
+def set_run_context(*, run_id: str, bob_dir: Path) -> None:
+    """Set the run context for cost recording. Called by Coordinator at run start."""
+    _current_run_id.set(run_id)
+    _current_bob_dir.set(bob_dir)
+
+
+def record_call_in_context(
+    *,
+    provider: str,
+    model: str,
+    tokens_in: int,
+    tokens_out: int,
+    phase: str,
+    feature_id: int | None = None,
+) -> None:
+    """Record a call using the active run context. No-op if context isn't set."""
+    bob_dir = _current_bob_dir.get()
+    if bob_dir is None:
+        return
+    record_call(
+        bob_dir=bob_dir,
+        run_id=_current_run_id.get(),
+        provider=provider,
+        model=model,
+        tokens_in=tokens_in,
+        tokens_out=tokens_out,
+        phase=phase,
+        feature_id=feature_id,
+    )
 
 
 def aggregate_costs(
