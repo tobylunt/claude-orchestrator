@@ -43,13 +43,17 @@ class AuditorPool:
         if not active:
             return results
 
-        # Snapshot the current context so worker threads inherit ContextVars
-        # (e.g., the cost-tracking run context set by the CLI).
-        ctx = contextvars.copy_context()
+        # Worker threads need their own ContextVar inheritance so the
+        # cost-tracking run context (set by the CLI) flows into auditor calls.
+        # Each worker gets its own context COPY — a single Context object
+        # cannot be re-entered concurrently by multiple workers.
+
+        def _run_in_inherited_context(auditor, ws, files):
+            return contextvars.copy_context().run(auditor.audit, ws, files)
 
         with ThreadPoolExecutor(max_workers=min(self.max_workers, len(active))) as executor:
             futures = {
-                executor.submit(ctx.run, a.audit, workspace, changed_files): a
+                executor.submit(_run_in_inherited_context, a, workspace, changed_files): a
                 for a in active
             }
             for future in as_completed(futures):
