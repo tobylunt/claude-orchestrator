@@ -228,6 +228,8 @@ def _cmd_status(args: argparse.Namespace) -> int:
 def _cmd_vroom_start(args: argparse.Namespace) -> int:
     """Start the Vroom daemon in the foreground (blocking)."""
     import time
+    import uuid
+    from claude_orchestrator.bob.cost_tracker import set_run_context
     from claude_orchestrator.bob.dotenv_loader import load_env_files
     from claude_orchestrator.bob.signals import install_handlers, is_shutdown_requested
     from claude_orchestrator.bob.vroom.auditor_pool import AuditorPool
@@ -244,6 +246,13 @@ def _cmd_vroom_start(args: argparse.Namespace) -> int:
 
     # Auto-load .env files before reading any env vars.
     load_env_files(project_root=project_root, cwd=Path.cwd())
+
+    # Set the cost-tracking run context so auditor API calls land in
+    # costs.jsonl. The daemon doesn't go through Coordinator.
+    bob_dir = project_root / ".bob"
+    bob_dir.mkdir(parents=True, exist_ok=True)
+    daemon_run_id = f"vroom-daemon-{uuid.uuid4()}"
+    set_run_context(run_id=daemon_run_id, bob_dir=bob_dir)
 
     install_handlers()
 
@@ -389,6 +398,8 @@ def _cmd_vroom_stop(args: argparse.Namespace) -> int:
 
 def _cmd_vroom_now(args: argparse.Namespace) -> int:
     """Run one audit cycle synchronously and exit."""
+    import uuid
+    from claude_orchestrator.bob.cost_tracker import set_run_context
     from claude_orchestrator.bob.dotenv_loader import load_env_files
     from claude_orchestrator.bob.vroom.auditor_pool import AuditorPool
     from claude_orchestrator.bob.vroom.auditors.semgrep import SemgrepAuditor
@@ -399,6 +410,14 @@ def _cmd_vroom_now(args: argparse.Namespace) -> int:
 
     # Auto-load .env files before reading any env vars.
     load_env_files(project_root=project_root, cwd=Path.cwd())
+
+    # Set the cost-tracking run context so auditor API calls land in
+    # costs.jsonl. `bob vroom now` doesn't go through Coordinator, so we
+    # must establish the context ourselves.
+    bob_dir = project_root / ".bob"
+    bob_dir.mkdir(parents=True, exist_ok=True)
+    vroom_run_id = f"vroom-{uuid.uuid4()}"
+    set_run_context(run_id=vroom_run_id, bob_dir=bob_dir)
 
     use_stub = os.environ.get("BOB_USE_STUB_VROOM", "0") == "1"
     if use_stub:
