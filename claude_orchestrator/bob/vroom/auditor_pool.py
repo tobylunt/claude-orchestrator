@@ -7,6 +7,7 @@ happens downstream (see coalescer.py).
 
 from __future__ import annotations
 
+import contextvars
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Protocol
@@ -42,9 +43,13 @@ class AuditorPool:
         if not active:
             return results
 
+        # Snapshot the current context so worker threads inherit ContextVars
+        # (e.g., the cost-tracking run context set by the CLI).
+        ctx = contextvars.copy_context()
+
         with ThreadPoolExecutor(max_workers=min(self.max_workers, len(active))) as executor:
             futures = {
-                executor.submit(a.audit, workspace, changed_files): a
+                executor.submit(ctx.run, a.audit, workspace, changed_files): a
                 for a in active
             }
             for future in as_completed(futures):
