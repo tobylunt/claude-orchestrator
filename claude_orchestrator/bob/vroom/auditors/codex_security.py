@@ -83,7 +83,8 @@ class _ProductionOpenAIClient:
 
         response = client.chat.completions.create(
             model=self.model,
-            max_tokens=4000,
+            # GPT-5+ requires max_completion_tokens; older models also accept it.
+            max_completion_tokens=4000,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},

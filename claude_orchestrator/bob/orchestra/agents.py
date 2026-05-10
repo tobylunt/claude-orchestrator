@@ -55,7 +55,8 @@ class OpenAIDebateAgent:
         client = OpenAI()
         response = client.chat.completions.create(
             model=self.model,
-            max_tokens=2000,
+            # GPT-5+ requires max_completion_tokens; older models also accept it.
+            max_completion_tokens=2000,
             messages=[
                 {"role": "system", "content": self.system},
                 {"role": "user", "content": prompt},
