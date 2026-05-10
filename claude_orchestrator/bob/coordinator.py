@@ -12,6 +12,7 @@ coordinator.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import uuid
 from dataclasses import dataclass
@@ -106,7 +107,11 @@ class Coordinator:
         set_run_context(run_id=run_id, bob_dir=self.bob_dir)
 
         self._set_cursor("starting", None, run_id)
-        self._log_event("run_started", {"run_id": run_id})
+        started_details: dict = {"run_id": run_id}
+        otel_endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+        if otel_endpoint:
+            started_details["otel_endpoint"] = otel_endpoint
+        self._log_event("run_started", started_details)
 
         # ---- Duplo phase ----
         if scope.includes_duplo:

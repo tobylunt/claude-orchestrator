@@ -521,6 +521,9 @@ def _cmd_runs(args: argparse.Namespace) -> int:
         })
         if event["event"] == "run_started":
             run["started"] = event["ts"]
+            otel_ep = event.get("otel_endpoint")
+            if otel_ep:
+                run["otel_endpoint"] = otel_ep
         elif event["event"] == "run_finished":
             run["finished"] = event["ts"]
             run["status"] = "finished"
@@ -556,7 +559,7 @@ def _cmd_runs(args: argparse.Namespace) -> int:
 
     print(f"Recent runs in {project_root}:\n")
     print(f"  {'ID':<13}  {'Started':<20}  {'Duration':<9}  {'Status':<10}  "
-          f"{'Features':<22}  Cost")
+          f"{'Features':<22}  {'Cost':<7}  Trace")
     for run in ordered:
         rid = run["run_id"]
         rid_display = rid[:8] + "…" if len(rid) > 8 else rid
@@ -581,8 +584,11 @@ def _cmd_runs(args: argparse.Namespace) -> int:
             features = "—"
         cost = per_run_cost.get(rid)
         cost_str = f"${cost:.2f}" if cost is not None else "—"
+        trace = run.get("otel_endpoint", "—")
+        if trace != "—" and len(trace) > 40:
+            trace = trace[:37] + "…"
         print(f"  {rid_display:<13}  {started:<20}  {duration:<9}  "
-              f"{status:<10}  {features:<22}  {cost_str}")
+              f"{status:<10}  {features:<22}  {cost_str:<7}  {trace}")
     return 0
 
 

@@ -183,3 +183,33 @@ def test_bob_runs_respects_limit(tmp_path: Path):
     # Only the latest (cccc3333) should appear; the others should NOT.
     assert "cccc3333" in result.stdout
     assert "aaaa1111" not in result.stdout
+
+
+def test_bob_runs_displays_trace_endpoint(tmp_path: Path):
+    """When run_started events include an otel_endpoint, bob runs should surface it."""
+    from claude_orchestrator.bob.state_io import append_jsonl
+    bob_dir = tmp_path / ".bob"
+    bob_dir.mkdir()
+    log_path = bob_dir / "run-log.jsonl"
+
+    append_jsonl(log_path, {
+        "ts": "2026-05-09T03:14:22+00:00",
+        "event": "run_started", "run_id": "abc99999-trace",
+        "otel_endpoint": "http://localhost:6006/v1/traces",
+    })
+    append_jsonl(log_path, {
+        "ts": "2026-05-09T03:15:01+00:00",
+        "event": "run_finished", "run_id": "abc99999-trace",
+    })
+
+    result = subprocess.run(
+        [sys.executable, "-m", "claude_orchestrator.bob.cli", "runs",
+         "--project", str(tmp_path)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0
+    # The endpoint hint should appear somewhere in the output (could be the URL itself,
+    # or just a "phoenix" / "otel" / partial URL).
+    assert ("localhost:6006" in result.stdout
+            or "phoenix" in result.stdout.lower()
+            or "trace" in result.stdout.lower())

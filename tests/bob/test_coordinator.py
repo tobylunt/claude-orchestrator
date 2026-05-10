@@ -475,6 +475,60 @@ def test_coordinator_fails_feature_on_merge_conflict(project_root: Path):
         assert state["status"] == "merged"
 
 
+def test_coordinator_records_otel_endpoint_in_run_started(project_root: Path, monkeypatch):
+    """When OTEL_EXPORTER_OTLP_ENDPOINT is set, run_started should include it."""
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:6006/v1/traces")
+
+    spec = _spec_with_features("a")
+    duplo = MagicMock(return_value=spec)
+    mcloop = MagicMock(return_value=McLoopResult(
+        outcome="exit_signal", iterations=1, last_reason="ok", last_status="ok",
+    ))
+    orchestra = MagicMock(return_value=Verdict(
+        feature_id=1, decision="approve", confidence=1.0,
+        debate_log_path=project_root / ".bob" / "fake.json",
+        judge_reasoning="lgtm",
+    ))
+    gates = GateRegistry(disabled={"post_duplo"})
+
+    coord = Coordinator(
+        project_root=project_root, duplo=duplo, mcloop=mcloop,
+        orchestra=orchestra, gates=gates, verbose=False,
+    )
+    coord.run(RunScope(includes_duplo=True))
+
+    events = list(read_jsonl(project_root / ".bob" / "run-log.jsonl"))
+    started = next(e for e in events if e["event"] == "run_started")
+    assert started.get("otel_endpoint") == "http://localhost:6006/v1/traces"
+
+
+def test_coordinator_omits_otel_when_unset(project_root: Path, monkeypatch):
+    """No OTEL_EXPORTER_OTLP_ENDPOINT: no otel_endpoint key."""
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
+
+    spec = _spec_with_features("a")
+    duplo = MagicMock(return_value=spec)
+    mcloop = MagicMock(return_value=McLoopResult(
+        outcome="exit_signal", iterations=1, last_reason="ok", last_status="ok",
+    ))
+    orchestra = MagicMock(return_value=Verdict(
+        feature_id=1, decision="approve", confidence=1.0,
+        debate_log_path=project_root / ".bob" / "fake.json",
+        judge_reasoning="lgtm",
+    ))
+    gates = GateRegistry(disabled={"post_duplo"})
+
+    coord = Coordinator(
+        project_root=project_root, duplo=duplo, mcloop=mcloop,
+        orchestra=orchestra, gates=gates, verbose=False,
+    )
+    coord.run(RunScope(includes_duplo=True))
+
+    events = list(read_jsonl(project_root / ".bob" / "run-log.jsonl"))
+    started = next(e for e in events if e["event"] == "run_started")
+    assert "otel_endpoint" not in started
+
+
 def test_coordinator_does_not_overwrite_merged_features_on_rerun(project_root: Path):
     """Re-running with the same spec must not reset status of already-merged features."""
     import json
