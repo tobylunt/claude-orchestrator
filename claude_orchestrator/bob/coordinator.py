@@ -105,6 +105,8 @@ class Coordinator:
     def _run_inner(self, scope: RunScope, run_id: str) -> None:
         from claude_orchestrator.bob.cost_tracker import set_run_context
         set_run_context(run_id=run_id, bob_dir=self.bob_dir)
+        # Stash run_id on self so _log_event auto-injects it into every event.
+        self._current_run_id = run_id
 
         self._set_cursor("starting", None, run_id)
         started_details: dict = {"run_id": run_id}
@@ -404,12 +406,17 @@ class Coordinator:
         return None  # unknown / not surfaced
 
     def _log_event(self, event: str, details: dict) -> None:
+        # Auto-inject run_id from the current run if not already in details.
+        # Lets `bob runs` group every event by its parent run.
+        full_details = dict(details)
+        if "run_id" not in full_details and getattr(self, "_current_run_id", None):
+            full_details["run_id"] = self._current_run_id
         append_jsonl(self.bob_dir / "run-log.jsonl", {
             "ts": datetime.now(UTC).isoformat(),
             "event": event,
-            **details,
+            **full_details,
         })
         if self.verbose:
-            line = self._format_progress(event, details)
+            line = self._format_progress(event, full_details)
             if line is not None:
                 print(line)

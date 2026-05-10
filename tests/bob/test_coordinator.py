@@ -127,6 +127,39 @@ def test_coordinator_writes_run_log(project_root: Path):
     assert "feature_merged" in event_types
 
 
+def test_coordinator_every_event_has_run_id(project_root: Path):
+    """Every event in run-log.jsonl must carry run_id so `bob runs` can group correctly."""
+    spec = _spec_with_features("a")
+
+    duplo = MagicMock(return_value=spec)
+    mcloop = MagicMock(return_value=McLoopResult(
+        outcome="exit_signal", iterations=1, last_reason="ok", last_status="ok",
+    ))
+    orchestra = MagicMock(return_value=Verdict(
+        feature_id=1, decision="approve", confidence=1.0,
+        debate_log_path=project_root / ".bob" / "fake.json",
+        judge_reasoning="lgtm",
+    ))
+    gates = GateRegistry(disabled={"post_duplo"})
+
+    coord = Coordinator(
+        project_root=project_root, duplo=duplo, mcloop=mcloop,
+        orchestra=orchestra, gates=gates,
+        verbose=False,
+    )
+    coord.run(RunScope(includes_duplo=True))
+
+    events = list(read_jsonl(project_root / ".bob" / "run-log.jsonl"))
+    started = next(e for e in events if e["event"] == "run_started")
+    expected_run_id = started["run_id"]
+
+    # Every event should carry the same run_id.
+    for e in events:
+        assert "run_id" in e, f"event missing run_id: {e}"
+        assert e["run_id"] == expected_run_id, \
+            f"event has wrong run_id: {e}"
+
+
 def test_coordinator_respects_post_duplo_reject(project_root: Path, monkeypatch):
     spec = _spec_with_features("a")
 
