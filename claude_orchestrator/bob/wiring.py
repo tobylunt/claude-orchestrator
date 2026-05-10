@@ -187,7 +187,27 @@ def build_coordinator(
 
     def orchestra_callable(*, feature: Feature, workspace: Path,
                            feature_dir: Path) -> Verdict:
-        diff = "(M2a placeholder; full diff capture in M2 proper)"
+        # Capture the actual diff from the feature's branch against main so
+        # the Orchestra agents can review real code, not a placeholder string.
+        import subprocess
+        from claude_orchestrator.bob.coordinator import _feature_dirname
+        branch = f"bob/{_feature_dirname(feature)}"
+        diff_proc = subprocess.run(
+            ["git", "diff", f"main..{branch}"],
+            cwd=str(project_root),
+            capture_output=True, text=True,
+        )
+        if diff_proc.returncode == 0 and diff_proc.stdout.strip():
+            diff = diff_proc.stdout
+        else:
+            # Fall back to diff against the worktree's HEAD vs main, in case
+            # branch naming differs.
+            fallback = subprocess.run(
+                ["git", "diff", "main..HEAD"],
+                cwd=str(workspace),
+                capture_output=True, text=True,
+            )
+            diff = fallback.stdout or "(no diff captured — empty branch?)"
         return orchestra_obj.review(
             feature=feature,
             diff=diff,
