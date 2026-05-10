@@ -43,17 +43,28 @@ class AuditorPool:
         if not active:
             return results
 
-        # Worker threads need their own ContextVar inheritance so the
-        # cost-tracking run context (set by the CLI) flows into auditor calls.
-        # Each worker gets its own context COPY — a single Context object
-        # cannot be re-entered concurrently by multiple workers.
+        # Worker threads need access to the main thread's ContextVar values
+        # (e.g., the cost-tracking run context). Pre-3.12 thread pools don't
+        # auto-propagate ContextVars, and `Context.run()` can't be entered by
+        # multiple threads concurrently. Workaround: extract the values now
+        # (on the main thread) and re-bind them inside each worker.
+        from claude_orchestrator.bob.cost_tracker import (
+            _current_bob_dir,
+            _current_run_id,
+        )
+        parent_run_id = _current_run_id.get()
+        parent_bob_dir = _current_bob_dir.get()
 
-        def _run_in_inherited_context(auditor, ws, files):
-            return contextvars.copy_context().run(auditor.audit, ws, files)
+        def _run_with_inherited_state(auditor, ws, files):
+            # Re-bind the cost-tracking ContextVars in this worker's context
+            # so record_call_in_context() finds them.
+            _current_run_id.set(parent_run_id)
+            _current_bob_dir.set(parent_bob_dir)
+            return auditor.audit(ws, files)
 
         with ThreadPoolExecutor(max_workers=min(self.max_workers, len(active))) as executor:
             futures = {
-                executor.submit(_run_in_inherited_context, a, workspace, changed_files): a
+                executor.submit(_run_with_inherited_state, a, workspace, changed_files): a
                 for a in active
             }
             for future in as_completed(futures):
