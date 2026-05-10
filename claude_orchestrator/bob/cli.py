@@ -451,6 +451,141 @@ def _cmd_vroom_now(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_costs(args: argparse.Namespace) -> int:
+    """Aggregate and display cost data."""
+    from claude_orchestrator.bob.cost_tracker import aggregate_costs
+
+    project_root = Path(args.project).resolve()
+    bob_dir = project_root / ".bob"
+
+    group_field = {
+        "run": "run_id",
+        "provider": "provider",
+        "phase": "phase",
+        "model": "model",
+    }[args.by]
+
+    agg = aggregate_costs(bob_dir, group_by=group_field)
+    if agg["total_calls"] == 0:
+        print(f"No cost data recorded yet (no {bob_dir}/costs.jsonl).")
+        return 0
+
+    print(f"Bob cost summary ({project_root})")
+    print()
+    total = agg["total_cost_usd"]
+    print(f"  Total: ${total:.2f}  ({agg['total_calls']} calls, "
+          f"{agg['total_tokens_in']:,} input tokens, "
+          f"{agg['total_tokens_out']:,} output tokens)")
+    print()
+    if agg.get("groups"):
+        print(f"  By {args.by}:")
+        # Sort groups by total cost descending.
+        items = sorted(
+            agg["groups"].items(),
+            key=lambda kv: kv[1]["total_cost_usd"],
+            reverse=True,
+        )
+        for key, sub in items:
+            display_key = key[:12] + "…" if len(key) > 12 else key
+            print(f"    {display_key:<14}  ${sub['total_cost_usd']:>6.2f}  "
+                  f"{sub['total_calls']:>3} calls  "
+                  f"{sub['total_tokens_in']:>8,} in / {sub['total_tokens_out']:>7,} out")
+    return 0
+
+
+def _cmd_runs(args: argparse.Namespace) -> int:
+    """Show recent Bob runs."""
+    from claude_orchestrator.bob.state_io import read_jsonl
+    from claude_orchestrator.bob.cost_tracker import aggregate_costs
+
+    project_root = Path(args.project).resolve()
+    bob_dir = project_root / ".bob"
+    log_path = bob_dir / "run-log.jsonl"
+
+    if not log_path.exists():
+        print(f"No runs recorded yet (no {log_path}).")
+        return 0
+
+    # Group events by run_id.
+    runs: dict[str, dict] = {}
+    for event in read_jsonl(log_path):
+        rid = event.get("run_id")
+        if not rid:
+            continue
+        run = runs.setdefault(rid, {
+            "run_id": rid,
+            "started": None,
+            "finished": None,
+            "status": "in_progress",
+            "feature_outcomes": [],
+        })
+        if event["event"] == "run_started":
+            run["started"] = event["ts"]
+        elif event["event"] == "run_finished":
+            run["finished"] = event["ts"]
+            run["status"] = "finished"
+        elif event["event"] == "run_aborted":
+            run["finished"] = event["ts"]
+            run["status"] = "aborted"
+        elif event["event"] == "feature_merged":
+            run["feature_outcomes"].append("merged")
+        elif event["event"] == "feature_rejected":
+            run["feature_outcomes"].append("rejected")
+        elif event["event"] == "feature_failed":
+            run["feature_outcomes"].append("failed")
+
+    # Pull cost data per run.
+    cost_agg = aggregate_costs(bob_dir, group_by="run_id")
+    per_run_cost = {
+        rid: data["total_cost_usd"]
+        for rid, data in cost_agg.get("groups", {}).items()
+    }
+
+    # Sort by start time descending.
+    ordered = sorted(
+        runs.values(),
+        key=lambda r: r.get("started") or "",
+        reverse=True,
+    )
+    if args.limit > 0:
+        ordered = ordered[:args.limit]
+
+    if not ordered:
+        print(f"No runs found in {log_path}.")
+        return 0
+
+    print(f"Recent runs in {project_root}:\n")
+    print(f"  {'ID':<13}  {'Started':<20}  {'Duration':<9}  {'Status':<10}  "
+          f"{'Features':<22}  Cost")
+    for run in ordered:
+        rid = run["run_id"]
+        rid_display = rid[:8] + "…" if len(rid) > 8 else rid
+        started = run.get("started", "")[:19].replace("T", " ")
+        duration = "—"
+        if run.get("started") and run.get("finished"):
+            try:
+                from datetime import datetime
+                t0 = datetime.fromisoformat(run["started"])
+                t1 = datetime.fromisoformat(run["finished"])
+                secs = (t1 - t0).total_seconds()
+                duration = f"{int(secs)}s" if secs < 60 else f"{int(secs / 60)}m{int(secs % 60)}s"
+            except (ValueError, TypeError):
+                pass
+        status = run["status"]
+        outcomes = run["feature_outcomes"]
+        if outcomes:
+            from collections import Counter
+            counts = Counter(outcomes)
+            features = ", ".join(f"{n} {k}" for k, n in counts.items())
+        else:
+            features = "—"
+        cost = per_run_cost.get(rid)
+        cost_str = f"${cost:.2f}" if cost is not None else "—"
+        print(f"  {rid_display:<13}  {started:<20}  {duration:<9}  "
+              f"{status:<10}  {features:<22}  {cost_str}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="bob")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -496,6 +631,26 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("--inputs", required=True,
                           help="path to a markdown spec")
     validate.set_defaults(func=_cmd_validate)
+
+    costs = sub.add_parser("costs", help="aggregate Bob cost data from .bob/costs.jsonl")
+    costs.add_argument("--project", default=".", help="project root (default: cwd)")
+    costs.add_argument(
+        "--by",
+        choices=["run", "provider", "phase", "model"],
+        default="run",
+        help="grouping (default: run)",
+    )
+    costs.set_defaults(func=_cmd_costs)
+
+    runs = sub.add_parser("runs", help="show recent Bob runs from .bob/run-log.jsonl")
+    runs.add_argument("--project", default=".", help="project root (default: cwd)")
+    runs.add_argument(
+        "--limit",
+        type=int,
+        default=10,
+        help="number of recent runs to show (0 = all; default: 10)",
+    )
+    runs.set_defaults(func=_cmd_runs)
 
     vroom = sub.add_parser("vroom", help="run/stop the Vroom audit daemon")
     vroom_sub = vroom.add_subparsers(dest="vroom_cmd", required=False)
