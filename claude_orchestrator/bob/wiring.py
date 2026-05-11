@@ -171,6 +171,10 @@ def build_coordinator(
         else:
             # Single-file markdown path (M2a behavior preserved).
             spec = parse_markdown_spec(spec_path)
+        # TODO(P1): wire MetaRubricChecker (duplo/meta_rubric.py) here. Today
+        # this is unconditionally True, which defeats the YOLO PostDuploGate
+        # invariant "auto-approve = enabled + rubric_passed". The checker is
+        # implemented; only a production Judge (Anthropic client) is missing.
         spec.rubric_meta_check_passed = True
         return spec
 

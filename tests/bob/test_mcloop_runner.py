@@ -10,7 +10,7 @@ from textwrap import dedent
 import pytest
 
 from claude_orchestrator.bob.mcloop.runner import McLoopRunner, McLoopResult
-from claude_orchestrator.bob.verifiers.protocol import VerifyResult
+from claude_orchestrator.bob.verifiers.protocol import PreflightResult, VerifyResult
 from claude_orchestrator.models import (
     Feature,
     FeatureStatus,
@@ -37,13 +37,14 @@ class FakeVerifier:
 
     id = "fake"
 
-    def __init__(self, results: list[VerifyResult]):
+    def __init__(self, results: list[VerifyResult], preflight: PreflightResult | None = None):
         self.results = list(results)
         self.calls = 0
+        self._preflight = preflight or PreflightResult(ok=True)
 
     def applies_to(self): return [TaskType.LIBRARY]
     def required_tools(self): return []
-    def preflight(self, ws): return None
+    def preflight(self, ws): return self._preflight
     def verify(self, ws, f):
         self.calls += 1
         return self.results.pop(0)
@@ -95,6 +96,44 @@ def test_runner_exits_when_promise_emitted_and_verifier_ok(
     assert isinstance(result, McLoopResult)
     assert result.outcome == "exit_signal"
     assert result.iterations == 1
+
+
+def test_runner_halts_loud_when_preflight_fails(tmp_path: Path):
+    """Verifier preflight failure (e.g., pytest not installed) must halt the
+    loop BEFORE spending any iteration. Iterating against a broken verifier
+    silently burns API budget — the same halt-loud rule as Inconclusive.
+    """
+    feature = _feature()
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    feature_dir = tmp_path / ".bob" / "features" / "001-t"
+    feature_dir.mkdir(parents=True)
+    (feature_dir / "spec.md").write_text("")
+    (feature_dir / "activity.md").write_text("")
+    (feature_dir / "failed_attempts.md").write_text("")
+    (feature_dir / "verifier-results.jsonl").write_text("")
+    master_spec = tmp_path / ".bob" / "spec.md"
+    master_spec.write_text("")
+
+    fake_claude = tmp_path / "claude"
+    fake_claude.write_text("#!/bin/sh\necho should-not-run\nexit 1\n")
+    fake_claude.chmod(0o755)
+
+    verifier = FakeVerifier(
+        results=[],
+        preflight=PreflightResult(ok=False, missing_tools=["pytest"]),
+    )
+    runner = McLoopRunner(claude_cmd=str(fake_claude), max_iterations=5,
+                         per_iteration_timeout_s=10)
+    result = runner.run(
+        feature=feature, workspace=workspace,
+        master_spec=master_spec, feature_dir=feature_dir, verifier=verifier,
+    )
+    assert result.outcome == "halted_inconclusive"
+    assert result.iterations == 0, "must halt before iterating"
+    assert "preflight" in result.last_reason.lower()
+    assert "pytest" in result.last_reason
+    assert verifier.calls == 0, "verifier.verify() must not be called"
 
 
 def test_runner_halts_loud_on_inconclusive(tmp_path: Path):

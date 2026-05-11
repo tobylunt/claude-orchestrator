@@ -139,6 +139,11 @@ def _cmd_run(args: argparse.Namespace) -> int:
         if yolo and yolo.enabled:
             child_env["BOB_VROOM_YOLO_ENABLED"] = "1"
             child_env["BOB_VROOM_YOLO_SEVERITY"] = yolo.vroom_severity
+            child_env["BOB_YOLO_MAX_INCONCLUSIVE"] = str(yolo.max_inconclusive)
+        # Forward --otel-endpoint CLI arg as env to the subprocess so it can
+        # call setup_tracing() and emit spans to the same backend.
+        if args.otel_endpoint:
+            child_env["OTEL_EXPORTER_OTLP_ENDPOINT"] = args.otel_endpoint
         vroom_proc = _subprocess.Popen(
             vroom_cmd,
             stdout=_subprocess.DEVNULL,
@@ -231,6 +236,7 @@ def _cmd_vroom_start(args: argparse.Namespace) -> int:
     import uuid
     from claude_orchestrator.bob.cost_tracker import set_run_context
     from claude_orchestrator.bob.dotenv_loader import load_env_files
+    from claude_orchestrator.bob.observability import setup_tracing
     from claude_orchestrator.bob.signals import install_handlers, is_shutdown_requested
     from claude_orchestrator.bob.vroom.auditor_pool import AuditorPool
     from claude_orchestrator.bob.vroom.daemon import VroomDaemon
@@ -246,6 +252,11 @@ def _cmd_vroom_start(args: argparse.Namespace) -> int:
 
     # Auto-load .env files before reading any env vars.
     load_env_files(project_root=project_root, cwd=Path.cwd())
+
+    # Wire OTEL in the subprocess so span() calls actually emit.
+    # Without this, the daemon's bob.vroom.cycle / bob.mcloop.iter spans are
+    # silent no-ops even when the parent process emits to a backend.
+    setup_tracing(service_name="bob-vroom")
 
     # Set the cost-tracking run context so auditor API calls land in
     # costs.jsonl. The daemon doesn't go through Coordinator.
@@ -403,6 +414,7 @@ def _cmd_vroom_now(args: argparse.Namespace) -> int:
     import uuid
     from claude_orchestrator.bob.cost_tracker import set_run_context
     from claude_orchestrator.bob.dotenv_loader import load_env_files
+    from claude_orchestrator.bob.observability import setup_tracing
     from claude_orchestrator.bob.vroom.auditor_pool import AuditorPool
     from claude_orchestrator.bob.vroom.auditors.semgrep import SemgrepAuditor
     from claude_orchestrator.bob.vroom.audit_cycle import VroomAuditCycle
@@ -412,6 +424,9 @@ def _cmd_vroom_now(args: argparse.Namespace) -> int:
 
     # Auto-load .env files before reading any env vars.
     load_env_files(project_root=project_root, cwd=Path.cwd())
+
+    # Same OTEL hookup as _cmd_vroom_start; without this, vroom spans are no-ops.
+    setup_tracing(service_name="bob-vroom")
 
     # Set the cost-tracking run context so auditor API calls land in
     # costs.jsonl. `bob vroom now` doesn't go through Coordinator, so we

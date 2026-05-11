@@ -108,6 +108,23 @@ class McLoopRunner:
         feature_dir: Path,
         verifier: _Verifier,
     ) -> McLoopResult:
+        # Preflight the verifier BEFORE spawning any claude -p. If the verifier
+        # can't operate (e.g., pytest is missing in the sandbox), iterating
+        # would burn API budget on noise.
+        preflight = verifier.preflight(workspace)
+        if preflight is not None and not preflight.ok:
+            missing = ", ".join(preflight.missing_tools) or "(no missing_tools listed)"
+            reason = (
+                f"verifier preflight failed: missing tools: {missing}"
+                + (f" -- {preflight.notes}" if preflight.notes else "")
+            )
+            return McLoopResult(
+                outcome="halted_inconclusive",
+                iterations=0,
+                last_reason=reason,
+                last_status=None,
+            )
+
         prompt = _render_prompt(feature, master_spec, feature_dir)
         verifier_log = feature_dir / "verifier-results.jsonl"
         consecutive_inconclusive = 0  # NEW
