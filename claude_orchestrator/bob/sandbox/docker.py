@@ -17,31 +17,7 @@ import os
 import subprocess
 from pathlib import Path
 
-
-# Host env vars forwarded into the container when the caller passes env=None.
-# Without this whitelist, DockerExecutor.run(env=None) emits zero -e flags,
-# the inner claude/codex subprocess can't authenticate, and McLoop burns all
-# its iterations with no output. Callers can override by passing env=dict.
-_DEFAULT_FORWARD_ENV = (
-    "ANTHROPIC_API_KEY",
-    "OPENAI_API_KEY",
-    "HOME",
-    "PATH",
-    "OTEL_EXPORTER_OTLP_ENDPOINT",
-    "OTEL_SERVICE_NAME",
-)
-
-
-def _build_forwarded_env() -> dict[str, str]:
-    """Read whitelisted host env vars + any BOB_DOCKER_FORWARD_ENV additions."""
-    keys = list(_DEFAULT_FORWARD_ENV)
-    extra = os.environ.get("BOB_DOCKER_FORWARD_ENV", "")
-    if extra:
-        keys.extend(k.strip() for k in extra.split(",") if k.strip())
-    # Also forward anything starting with BOB_ (config), ANTHROPIC_, OPENAI_.
-    prefix_match = [k for k in os.environ if k.startswith(("BOB_", "ANTHROPIC_", "OPENAI_"))]
-    keys.extend(prefix_match)
-    return {k: os.environ[k] for k in set(keys) if k in os.environ}
+from claude_orchestrator.bob.sandbox.executor import build_forwarded_env
 
 
 class DockerExecutor:
@@ -135,7 +111,15 @@ class DockerExecutor:
         # Env vars: explicit dict if provided, otherwise forward a whitelist
         # from the host. Without this, env=None means "no env in container"
         # and the inner subprocess can't authenticate to Anthropic/OpenAI.
-        runtime_env = env if env is not None else _build_forwarded_env()
+        runtime_env = (
+            dict(env) if env is not None
+            else build_forwarded_env(extra_env_var="BOB_DOCKER_FORWARD_ENV")
+        )
+        # Force HOME to a writable container path. The Docker --user flag
+        # uses an unmapped UID (no /etc/passwd entry), so HOME defaults to
+        # "/" — which is unwritable — and tools like `claude` silently hang
+        # trying to write ~/.claude/... Caller-supplied HOME wins.
+        runtime_env.setdefault("HOME", "/tmp")
         for key, value in runtime_env.items():
             docker_args.extend(["-e", f"{key}={value}"])
 

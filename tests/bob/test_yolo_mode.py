@@ -51,3 +51,21 @@ def test_yolo_config_overrides_via_env(monkeypatch):
     cfg = YoloConfig.from_env(enabled=False)  # disabled but env still applies
     assert cfg.max_inconclusive == 5
     assert cfg.vroom_severity == "medium"
+
+
+def test_vroom_yolo_from_env_preserves_parent_bounds(monkeypatch):
+    """The vroom subprocess must consume the YOLO values its parent produced."""
+    from claude_orchestrator.bob.cli import _vroom_yolo_from_env
+
+    monkeypatch.setenv("BOB_VROOM_YOLO_ENABLED", "1")
+    monkeypatch.setenv("BOB_VROOM_YOLO_SEVERITY", "critical")
+    monkeypatch.setenv("BOB_VROOM_YOLO_MAX_COST", "12.5")
+    monkeypatch.setenv("BOB_YOLO_MAX_INCONCLUSIVE", "7")
+
+    cfg = _vroom_yolo_from_env(sandbox_tier="devcontainer")
+    assert cfg is not None
+    assert cfg.enabled is True
+    assert cfg.sandbox_tier == "devcontainer"
+    assert cfg.max_cost == 12.5
+    assert cfg.max_inconclusive == 7
+    assert cfg.vroom_severity == "critical"

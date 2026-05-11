@@ -667,3 +667,69 @@ def test_coordinator_event_field_truncated_to_pipe_buf_safe(project_root: Path):
     assert events[-1]["event"] == "mcloop_finished"
     assert len(events[-1]["reason"]) <= coord._EVENT_FIELD_LIMIT + len("… [truncated]")
     assert events[-1]["reason"].endswith("… [truncated]")
+
+
+def test_save_feature_rolls_up_cost_from_costs_jsonl(project_root: Path):
+    """state.cost_usd is empty until populated from costs.jsonl filtered by
+    feature_id. Now that the contextvar binds feature_id on each phase, the
+    Coordinator can roll up per-feature spend at save time."""
+    import json
+    from claude_orchestrator.bob.coordinator import Coordinator
+    from claude_orchestrator.bob.hitl.gates import GateRegistry
+    from claude_orchestrator.bob.state_io import append_jsonl
+
+    bob_dir = project_root / ".bob"
+    bob_dir.mkdir(parents=True, exist_ok=True)
+    # Seed costs.jsonl with rows for two features + one orphan (feature_id=None).
+    for row in [
+        {"feature_id": 1, "cost_usd": 0.05, "phase": "orchestra", "ts": "t", "run_id": "r", "provider": "anthropic", "model": "m", "tokens_in": 1, "tokens_out": 1},
+        {"feature_id": 1, "cost_usd": 0.03, "phase": "orchestra", "ts": "t", "run_id": "r", "provider": "openai", "model": "m", "tokens_in": 1, "tokens_out": 1},
+        {"feature_id": 2, "cost_usd": 0.10, "phase": "orchestra", "ts": "t", "run_id": "r", "provider": "anthropic", "model": "m", "tokens_in": 1, "tokens_out": 1},
+        {"feature_id": None, "cost_usd": 0.01, "phase": "duplo", "ts": "t", "run_id": "r", "provider": "anthropic", "model": "m", "tokens_in": 1, "tokens_out": 1},
+    ]:
+        append_jsonl(bob_dir / "costs.jsonl", row)
+
+    spec = _spec_with_features("a")
+    coord = Coordinator(
+        project_root=project_root, duplo=MagicMock(return_value=spec),
+        mcloop=MagicMock(), orchestra=MagicMock(),
+        gates=GateRegistry(),
+        verbose=False,
+    )
+    coord._materialize_spec(spec)
+    feature_dir = project_root / ".bob" / "features" / "001-a"
+    feature = Feature.model_validate_json((feature_dir / "state.json").read_text())
+    assert feature.id == 1
+
+    coord._save_feature(feature, feature_dir)
+    persisted = json.loads((feature_dir / "state.json").read_text())
+    assert persisted["cost_usd"] == pytest.approx(0.08), f"got {persisted['cost_usd']}"
+
+
+def test_coordinator_bumps_attempts_when_entering_mcloop(project_root: Path):
+    """state.attempts must bump each time the McLoop block is entered so
+    resume after a partial-state crash reflects effort spent."""
+    import json
+    from claude_orchestrator.bob.coordinator import Coordinator
+    from claude_orchestrator.bob.hitl.gates import GateRegistry
+
+    spec = _spec_with_features("a")
+    duplo = MagicMock(return_value=spec)
+    mcloop = MagicMock(return_value=McLoopResult(
+        outcome="exit_signal", iterations=1, last_reason="ok", last_status="ok",
+    ))
+    orchestra = MagicMock(return_value=Verdict(
+        feature_id=1, decision="approve", confidence=1.0,
+        debate_log_path=project_root / ".bob" / "fake.json",
+        judge_reasoning="lgtm",
+    ))
+    coord = Coordinator(
+        project_root=project_root, duplo=duplo, mcloop=mcloop,
+        orchestra=orchestra, gates=GateRegistry(disabled={"post_duplo"}),
+        verbose=False,
+    )
+    coord.run(RunScope(includes_duplo=True))
+
+    state = json.loads((project_root / ".bob" / "features" / "001-a" / "state.json").read_text())
+    # status=merged means McLoop entered once -> attempts bumped from 0 to 1.
+    assert state["attempts"] == 1

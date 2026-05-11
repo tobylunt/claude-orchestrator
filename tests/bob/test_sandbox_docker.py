@@ -289,3 +289,53 @@ def test_docker_executor_raises_on_build_failure(tmp_path: Path):
         executor = DockerExecutor(image="python:3.10-slim", dockerfile=dockerfile)
         with pytest.raises(RuntimeError, match="docker build failed"):
             executor.run(["echo", "hi"], cwd=tmp_path, env={}, timeout=30)
+
+
+def test_docker_executor_does_not_forward_host_HOME_or_PATH(tmp_path: Path, monkeypatch):
+    """The host's HOME (e.g., /Users/tobiaslunt on macOS) does not exist
+    inside the container; forwarding it makes `claude` hang trying to write
+    ~/.claude/... Same for PATH — the host PATH references binaries that
+    aren't in the container's filesystem. Container's image-provided HOME
+    (default '/tmp' here) and PATH should win.
+    """
+    monkeypatch.setenv("HOME", "/Users/me")
+    monkeypatch.setenv("PATH", "/host/bin:/usr/bin")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+    captured = []
+    def capture(args, **kwargs):
+        captured.append(args)
+        from subprocess import CompletedProcess
+        return CompletedProcess(args, 0, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=capture):
+        DockerExecutor(image="python:3.10-slim").run(
+            ["echo", "hi"], cwd=tmp_path, env=None, timeout=30,
+        )
+
+    args = captured[0]
+    # No -e HOME=/Users/me  and  no -e PATH=/host/bin/...
+    assert not any(a == "HOME=/Users/me" for a in args)
+    assert not any(a.startswith("PATH=/host/bin") for a in args)
+    # But HOME=/tmp must be set (writable container fallback)
+    assert any(a == "HOME=/tmp" for a in args), \
+        f"expected -e HOME=/tmp in docker args; got {args}"
+
+
+def test_docker_executor_caller_HOME_wins_over_default(tmp_path: Path):
+    """If the caller passes env={'HOME': '/custom'}, that wins over /tmp."""
+    captured = []
+    def capture(args, **kwargs):
+        captured.append(args)
+        from subprocess import CompletedProcess
+        return CompletedProcess(args, 0, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=capture):
+        DockerExecutor(image="python:3.10-slim").run(
+            ["echo", "hi"], cwd=tmp_path,
+            env={"HOME": "/custom"}, timeout=30,
+        )
+
+    args = captured[0]
+    assert any(a == "HOME=/custom" for a in args)
+    assert not any(a == "HOME=/tmp" for a in args)

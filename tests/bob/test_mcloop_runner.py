@@ -3,6 +3,7 @@
 The runner spawns `claude -p` subprocesses. Tests use a stub `claude`
 shell script (created in tmp_path) to exercise the loop deterministically.
 """
+import json
 import subprocess
 from pathlib import Path
 from textwrap import dedent
@@ -10,6 +11,7 @@ from textwrap import dedent
 import pytest
 
 from claude_orchestrator.bob.mcloop.runner import McLoopRunner, McLoopResult
+from claude_orchestrator.bob.cost_tracker import set_feature_context, set_run_context
 from claude_orchestrator.bob.verifiers.protocol import PreflightResult, VerifyResult
 from claude_orchestrator.models import (
     Feature,
@@ -96,6 +98,43 @@ def test_runner_exits_when_promise_emitted_and_verifier_ok(
     assert isinstance(result, McLoopResult)
     assert result.outcome == "exit_signal"
     assert result.iterations == 1
+
+
+def test_runner_polls_shutdown_between_iterations(tmp_path: Path, monkeypatch):
+    """After a SIGINT (shutdown requested), McLoop must NOT start another
+    iteration. Without this, claude -p subprocesses ignore propagated SIGINT
+    and the loop blithely keeps spending API budget until max_iterations."""
+    from claude_orchestrator.bob import signals as _signals
+    feature = _feature()
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    feature_dir = tmp_path / ".bob" / "features" / "001-t"
+    feature_dir.mkdir(parents=True)
+    for f in ("spec.md", "activity.md", "failed_attempts.md", "verifier-results.jsonl"):
+        (feature_dir / f).write_text("")
+    master_spec = tmp_path / ".bob" / "spec.md"
+    master_spec.write_text("")
+    fake_claude = tmp_path / "claude"
+    fake_claude.write_text("#!/bin/sh\necho ok\n")
+    fake_claude.chmod(0o755)
+
+    # Pre-arm the shutdown flag so the very first iteration check fires.
+    monkeypatch.setattr(_signals, "_shutdown_requested", True)
+
+    verifier = FakeVerifier(results=[])
+    runner = McLoopRunner(
+        claude_cmd=str(fake_claude),
+        max_iterations=10,
+        per_iteration_timeout_s=10,
+    )
+    result = runner.run(
+        feature=feature, workspace=workspace,
+        master_spec=master_spec, feature_dir=feature_dir, verifier=verifier,
+    )
+    assert result.outcome == "error"
+    assert result.iterations == 0
+    assert "shutdown" in result.last_reason.lower()
+    assert verifier.calls == 0
 
 
 def test_runner_halts_loud_when_preflight_fails(tmp_path: Path):
@@ -271,9 +310,11 @@ def test_runner_passes_permission_bypass_flag(tmp_path: Path, monkeypatch):
         master_spec=master_spec, feature_dir=feature_dir, verifier=verifier,
     )
 
-    # Inspect the args passed to subprocess.run
-    assert len(captured_args) == 1
-    args = captured_args[0]
+    # Find the claude-call args (later calls are autocommit git ops which the
+    # patched subprocess.run mocks but are unrelated to this assertion).
+    claude_calls = [a for a in captured_args if a and a[0] == "claude"]
+    assert len(claude_calls) == 1
+    args = claude_calls[0]
     # Args should be a list like ['claude', '-p', PROMPT, '--permission-mode', 'bypassPermissions']
     assert "--permission-mode" in args, f"missing permission flag in: {args}"
     idx = args.index("--permission-mode")
@@ -358,6 +399,52 @@ def test_runner_passes_stream_json_output_format(tmp_path: Path, monkeypatch):
     assert "--output-format" in args, f"missing output-format in: {args}"
     idx = args.index("--output-format")
     assert args[idx + 1] == "stream-json"
+
+
+def test_runner_records_claude_cli_stream_json_cost(tmp_path: Path):
+    """Claude CLI total_cost_usd should become a normal cost row."""
+    feature = _feature()
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    feature_dir = tmp_path / ".bob" / "features" / "001-t"
+    feature_dir.mkdir(parents=True)
+    (feature_dir / "spec.md").write_text("")
+    (feature_dir / "activity.md").write_text("")
+    (feature_dir / "failed_attempts.md").write_text("")
+    (feature_dir / "verifier-results.jsonl").write_text("")
+    bob_dir = tmp_path / ".bob"
+    master_spec = bob_dir / "spec.md"
+    master_spec.write_text("")
+
+    fake_claude = tmp_path / "claude"
+    fake_claude.write_text(dedent("""\
+        #!/bin/sh
+        echo '{"type":"result","total_cost_usd":0.36}'
+        echo '<promise>EXIT_SIGNAL</promise>'
+    """))
+    fake_claude.chmod(0o755)
+
+    set_run_context(run_id="run-1", bob_dir=bob_dir)
+    set_feature_context(feature.id)
+    try:
+        verifier = FakeVerifier([
+            VerifyResult(status="ok", reason="", artifacts=[], coverage_notes=None),
+        ])
+        runner = McLoopRunner(claude_cmd=str(fake_claude), max_iterations=1,
+                             per_iteration_timeout_s=10)
+        runner.run(
+            feature=feature, workspace=workspace,
+            master_spec=master_spec, feature_dir=feature_dir, verifier=verifier,
+        )
+    finally:
+        set_feature_context(None)
+
+    rows = [json.loads(line) for line in (bob_dir / "costs.jsonl").read_text().splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["provider"] == "anthropic_cli"
+    assert rows[0]["phase"] == "mcloop"
+    assert rows[0]["feature_id"] == feature.id
+    assert rows[0]["cost_usd"] == pytest.approx(0.36)
 
 
 def test_runner_logs_each_iteration_separately(tmp_path: Path):
@@ -559,3 +646,122 @@ def test_runner_default_mode_still_halts_on_first_inconclusive(tmp_path: Path):
     )
     assert result.outcome == "halted_inconclusive"
     assert result.iterations == 1  # halted on first
+
+
+def test_runner_autocommits_uncommitted_changes_after_green_verifier(tmp_path: Path):
+    """When verifier returns ok, McLoop auto-commits any uncommitted worktree
+    changes on the host. Necessary under --sandbox docker because the inner
+    claude can't reach the host .git, so its files end up as untracked. If
+    we didn't auto-commit, Orchestra's `git diff main..branch` would come
+    back empty and the feature would be rejected."""
+    import subprocess as sp
+
+    # Set up a real git repo + worktree on a feature branch.
+    project = tmp_path / "proj"
+    project.mkdir()
+    sp.run(["git", "init", "-b", "main", str(project)], check=True, capture_output=True)
+    (project / "README.md").write_text("hi\n")
+    sp.run(["git", "-C", str(project), "add", "."], check=True, capture_output=True)
+    sp.run(
+        ["git", "-C", str(project), "-c", "user.email=t@t.com",
+         "-c", "user.name=T", "commit", "-m", "init"],
+        check=True, capture_output=True,
+    )
+    workspace = project / "worktree"
+    sp.run(
+        ["git", "-C", str(project), "worktree", "add", str(workspace), "-b", "feature/x"],
+        check=True, capture_output=True,
+    )
+    # Simulate claude writing a new file but NOT committing (as happens in
+    # --sandbox docker).
+    (workspace / "new.py").write_text("def hi(): return 1\n")
+
+    # Stub claude + verifier.
+    fake_claude = tmp_path / "claude"
+    fake_claude.write_text("#!/bin/sh\necho '<promise>EXIT_SIGNAL</promise>'\n")
+    fake_claude.chmod(0o755)
+    feature_dir = tmp_path / ".bob" / "features" / "001-t"
+    feature_dir.mkdir(parents=True)
+    for f in ("spec.md", "activity.md", "failed_attempts.md", "verifier-results.jsonl"):
+        (feature_dir / f).write_text("")
+    master_spec = tmp_path / ".bob" / "spec.md"
+    master_spec.write_text("")
+
+    verifier = FakeVerifier([
+        VerifyResult(status="ok", reason="green", artifacts=[], coverage_notes=None),
+    ])
+    runner = McLoopRunner(
+        claude_cmd=str(fake_claude),
+        max_iterations=1,
+        per_iteration_timeout_s=10,
+    )
+    runner.run(
+        feature=_feature(), workspace=workspace,
+        master_spec=master_spec, feature_dir=feature_dir, verifier=verifier,
+    )
+
+    # After the run, new.py should be committed on feature/x.
+    log = sp.run(
+        ["git", "-C", str(workspace), "log", "--oneline"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert "mcloop iter 1: verifier green" in log, f"autocommit didn't fire; log: {log}"
+    diff = sp.run(
+        ["git", "-C", str(project), "diff", "--name-only", "main..feature/x"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert "new.py" in diff, f"expected new.py in diff main..feature/x; got: {diff!r}"
+
+
+def test_autocommit_excludes_pycache_and_build_artifacts(tmp_path: Path):
+    """The autocommit must not stage __pycache__/*.pyc even when the project
+    lacks a .gitignore. Surfaced by the Docker dogfood: Orchestra rejected
+    a feature because autocommit had pulled in compiled-bytecode noise."""
+    import subprocess as sp
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    sp.run(["git", "init", "-b", "main", str(project)], check=True, capture_output=True)
+    (project / "README.md").write_text("hi\n")
+    sp.run(["git", "-C", str(project), "add", "."], check=True, capture_output=True)
+    sp.run(
+        ["git", "-C", str(project), "-c", "user.email=t@t.com",
+         "-c", "user.name=T", "commit", "-m", "init"],
+        check=True, capture_output=True,
+    )
+    workspace = project / "worktree"
+    sp.run(
+        ["git", "-C", str(project), "worktree", "add", str(workspace), "-b", "feature/y"],
+        check=True, capture_output=True,
+    )
+    # claude writes a source file + pytest leaves __pycache__ behind.
+    (workspace / "mod.py").write_text("def f(): return 1\n")
+    pycache = workspace / "__pycache__"
+    pycache.mkdir()
+    (pycache / "mod.cpython-310.pyc").write_bytes(b"\xfa\x00\x00\x00")
+    (workspace / "mod.pyc").write_bytes(b"\xfa\x00\x00\x00")
+
+    fake_claude = tmp_path / "claude"
+    fake_claude.write_text("#!/bin/sh\necho '<promise>EXIT_SIGNAL</promise>'\n")
+    fake_claude.chmod(0o755)
+    feature_dir = tmp_path / ".bob" / "features" / "001-t"
+    feature_dir.mkdir(parents=True)
+    for f in ("spec.md", "activity.md", "failed_attempts.md", "verifier-results.jsonl"):
+        (feature_dir / f).write_text("")
+    master_spec = tmp_path / ".bob" / "spec.md"
+    master_spec.write_text("")
+
+    runner = McLoopRunner(claude_cmd=str(fake_claude), max_iterations=1, per_iteration_timeout_s=10)
+    runner.run(
+        feature=_feature(), workspace=workspace,
+        master_spec=master_spec, feature_dir=feature_dir,
+        verifier=FakeVerifier([VerifyResult(status="ok", reason="", artifacts=[], coverage_notes=None)]),
+    )
+
+    diff_files = sp.run(
+        ["git", "-C", str(project), "diff", "--name-only", "main..feature/y"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert "mod.py" in diff_files
+    assert "__pycache__" not in diff_files
+    assert ".pyc" not in diff_files

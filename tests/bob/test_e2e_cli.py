@@ -64,6 +64,7 @@ def test_bob_run_against_tiny_project(
     env = os.environ.copy()
     env["PATH"] = str(fake_claude_dir) + os.pathsep + env["PATH"]
     env["BOB_USE_STUB_ORCHESTRA"] = "1"  # so the test doesn't call real APIs
+    env["BOB_USE_STUB_DUPLO"] = "1"  # so meta-rubric does not call Anthropic
 
     result = subprocess.run(
         [sys.executable, "-m", "claude_orchestrator.bob.cli", "run",

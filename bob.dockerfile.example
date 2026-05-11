@@ -9,19 +9,18 @@
 #   4. Whatever language toolchain your project uses
 #
 # IMPORTANT: claude inside the container needs access to your Anthropic auth.
-# When you run `bob run --sandbox docker`, mount your config:
+# DockerExecutor forwards ANTHROPIC_API_KEY / OPENAI_API_KEY from the host
+# environment automatically (M9). If you sign in via `claude` CLI sessions
+# rather than API keys, mount your config instead:
 #
-#   docker run ... -v $HOME/.claude:/root/.claude:ro ...
-#
-# Bob's DockerExecutor doesn't do this automatically (M9 todo); for now you
-# may need to add the mount via BOB_DOCKER_EXTRA_ARGS or pass `--add-host`
-# entries to reach api.anthropic.com.
+#   BOB_DOCKER_EXTRA_ARGS='-v $HOME/.claude:/root/.claude:ro' bob run ...
 
 FROM python:3.10-slim
 
-# Base tooling
+# Base tooling. `jq` is needed because some claude tool-use paths shell out
+# to it inside the container; without it those calls fail silently.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git curl ca-certificates \
+    git curl ca-certificates jq \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js (claude CLI runtime)
@@ -32,11 +31,13 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 # Install the Claude Code CLI (or pin a specific version)
 RUN npm install -g @anthropic-ai/claude-code
 
-# Project-specific Python deps
-COPY requirements.txt /tmp/requirements.txt
-RUN if [ -f /tmp/requirements.txt ]; then \
-        pip install --no-cache-dir -r /tmp/requirements.txt; \
-    fi
+# Project-specific Python deps — uncomment + add a requirements.txt to
+# your project root when ready. Leaving these commented avoids the
+# "COPY: requirements.txt not found" build failure that fires when the
+# file doesn't exist (Docker COPY does not support optional files).
+#
+# COPY requirements.txt /tmp/requirements.txt
+# RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 # Set up a non-root user for safer execution
 RUN useradd -m -s /bin/bash bob

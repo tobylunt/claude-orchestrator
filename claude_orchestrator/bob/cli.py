@@ -14,6 +14,21 @@ from pathlib import Path
 from claude_orchestrator.bob.state_io import read_json
 
 
+def _vroom_yolo_from_env(*, sandbox_tier: str):
+    """Reconstruct the parent's YOLO config inside a vroom subprocess."""
+    if os.environ.get("BOB_VROOM_YOLO_ENABLED") != "1":
+        return None
+    from claude_orchestrator.bob.yolo import YoloConfig
+    return YoloConfig(
+        enabled=True,
+        sandbox_tier=sandbox_tier,
+        max_cost=float(os.environ.get("BOB_VROOM_YOLO_MAX_COST", "999999.0")),
+        max_inconclusive=int(os.environ.get("BOB_YOLO_MAX_INCONCLUSIVE", "3")),
+        vroom_severity=os.environ.get("BOB_VROOM_YOLO_SEVERITY", "high"),  # type: ignore[arg-type]
+        notify_channel=os.environ.get("BOB_YOLO_NOTIFY"),
+    )
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     from claude_orchestrator.bob.coordinator import RunScope
     from claude_orchestrator.bob.dotenv_loader import load_env_files
@@ -140,6 +155,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         if yolo and yolo.enabled:
             child_env["BOB_VROOM_YOLO_ENABLED"] = "1"
             child_env["BOB_VROOM_YOLO_SEVERITY"] = yolo.vroom_severity
+            child_env["BOB_VROOM_YOLO_MAX_COST"] = str(yolo.max_cost)
             child_env["BOB_YOLO_MAX_INCONCLUSIVE"] = str(yolo.max_inconclusive)
         # Forward --otel-endpoint CLI arg as env to the subprocess so it can
         # call setup_tracing() and emit spans to the same backend.
@@ -296,15 +312,12 @@ def _cmd_vroom_start(args: argparse.Namespace) -> int:
         codex_aud = CodexSecurityAuditor()
     pool = AuditorPool([SemgrepAuditor(), claude_aud, codex_aud])
 
-    yolo = None
-    if os.environ.get("BOB_VROOM_YOLO_ENABLED") == "1":
-        from claude_orchestrator.bob.yolo import YoloConfig
-        yolo = YoloConfig(
-            enabled=True,
-            sandbox_tier="docker",
-            max_cost=999999.0,  # placeholder; the parent's gating already enforced
-            vroom_severity=os.environ.get("BOB_VROOM_YOLO_SEVERITY", "high"),  # type: ignore[arg-type]
-        )
+    sandbox_tier = (
+        getattr(args, "sandbox", None)
+        or os.environ.get("BOB_SANDBOX_TIER")
+        or "host"
+    )
+    yolo = _vroom_yolo_from_env(sandbox_tier=sandbox_tier)
     triage_gate = VroomTriageGate(yolo=yolo)
 
     # The fix-loop spawns isolated McLoops on vroom/<id> branches. The
@@ -314,16 +327,12 @@ def _cmd_vroom_start(args: argparse.Namespace) -> int:
     from claude_orchestrator.bob.verifiers.python_pytest import PythonPytestVerifier
     from claude_orchestrator.bob.wiring import _build_executor
 
-    sandbox_tier = (
-        getattr(args, "sandbox", None)
-        or os.environ.get("BOB_SANDBOX_TIER")
-        or "host"
-    )
     executor = _build_executor(sandbox_tier, project_root=project_root)
     runner = McLoopRunner(
         claude_cmd="claude",
         max_iterations=10,
         executor=executor,
+        yolo=yolo,
     )
     verifier = PythonPytestVerifier()
 
@@ -469,15 +478,9 @@ def _cmd_vroom_now(args: argparse.Namespace) -> int:
         codex_aud = CodexSecurityAuditor()
     pool = AuditorPool([SemgrepAuditor(), claude_aud, codex_aud])
 
-    yolo = None
-    if os.environ.get("BOB_VROOM_YOLO_ENABLED") == "1":
-        from claude_orchestrator.bob.yolo import YoloConfig
-        yolo = YoloConfig(
-            enabled=True,
-            sandbox_tier="docker",
-            max_cost=999999.0,  # placeholder; the parent's gating already enforced
-            vroom_severity=os.environ.get("BOB_VROOM_YOLO_SEVERITY", "high"),  # type: ignore[arg-type]
-        )
+    yolo = _vroom_yolo_from_env(
+        sandbox_tier=os.environ.get("BOB_SANDBOX_TIER", "docker")
+    )
     triage_gate = VroomTriageGate(yolo=yolo)
     # No fix_driver in `vroom now` — keep the cycle to "audit + persist + triage" without
     # actually running a fix-loop, so the user can review then run again with --fix.

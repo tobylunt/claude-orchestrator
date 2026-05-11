@@ -38,6 +38,7 @@ from claude_orchestrator.bob.state_io import (
     append_jsonl,
     read_json,
     write_json_atomic,
+    write_text_atomic,
 )
 from claude_orchestrator.bob.worktree import (
     WorktreeError,
@@ -196,7 +197,10 @@ class Coordinator:
             for c in f.verification_plan.success_criteria:
                 master.append(f"  - {c}")
             master.append(f"- description: {f.description}")
-        (self.bob_dir / "spec.md").write_text("\n".join(master) + "\n")
+        # Atomic: tempfile + fsync + rename. A SIGKILL mid-write would
+        # otherwise leave a truncated spec.md; McLoop would then feed a
+        # half-formed master spec into every iteration.
+        write_text_atomic(self.bob_dir / "spec.md", "\n".join(master) + "\n")
 
         for f in spec.features:
             d = self.bob_dir / "features" / _feature_dirname(f)
@@ -204,8 +208,9 @@ class Coordinator:
             d.mkdir(parents=True, exist_ok=True)
 
             if is_new:
-                (d / "spec.md").write_text(
-                    f"# F{f.id}: {f.name}\n\n{f.description}\n"
+                write_text_atomic(
+                    d / "spec.md",
+                    f"# F{f.id}: {f.name}\n\n{f.description}\n",
                 )
                 (d / "activity.md").write_text("")
                 (d / "failed_attempts.md").write_text("")
@@ -262,6 +267,10 @@ class Coordinator:
         # and go directly to Orchestra. Worktree should still be on disk from the prior run.
         if feature.status != FeatureStatus.MCLOOP_DONE:
             feature.status = FeatureStatus.IN_PROGRESS
+            # Bump attempts so resume counts as a new try. Lets `bob status`
+            # and future retry-budgeting code see how many cycles a feature
+            # has consumed without sniffing the file system.
+            feature.attempts = (feature.attempts or 0) + 1
             feature.updated_at = datetime.now(UTC)
             self._save_feature(feature, feature_dir)
 
@@ -412,7 +421,32 @@ class Coordinator:
         return False, msg
 
     def _save_feature(self, f: Feature, feature_dir: Path) -> None:
+        # Roll up per-feature cost from costs.jsonl. Feature_id is now bound
+        # via ContextVar at run time so every orchestra/mcloop call records
+        # which feature it belongs to. `bob status` shows this number.
+        f.cost_usd = self._sum_costs_for_feature(f.id)
         write_json_atomic(feature_dir / "state.json", f.model_dump(mode="json"))
+
+    def _sum_costs_for_feature(self, feature_id: int) -> float:
+        costs_path = self.bob_dir / "costs.jsonl"
+        if not costs_path.exists():
+            return 0.0
+        total = 0.0
+        try:
+            for line in costs_path.read_text().splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if row.get("feature_id") == feature_id:
+                    c = row.get("cost_usd")
+                    if isinstance(c, (int, float)):
+                        total += c
+        except OSError:
+            return 0.0
+        return total
 
     def _set_cursor(self, phase: str, feature_id: int | None, run_id: str) -> None:
         write_json_atomic(self.bob_dir / "cursor.json", {

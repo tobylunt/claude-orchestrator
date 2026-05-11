@@ -118,10 +118,7 @@ class CodexSecurityAuditor:
 
     def audit(self, workspace: Path, changed_files: list[Path]) -> list[Finding]:
         client = self._client or _ProductionOpenAIClient()
-        try:
-            text = client.audit_workspace(workspace, changed_files)
-        except Exception:
-            return []
+        text = client.audit_workspace(workspace, changed_files)
         return _parse_findings(text)
 
 

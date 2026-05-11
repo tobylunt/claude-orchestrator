@@ -15,6 +15,7 @@ This is the M1 implementation. M2 wraps in sandbox tier 2 (Docker).
 from __future__ import annotations
 
 import re
+import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -33,8 +34,13 @@ else:
 from datetime import datetime
 
 from claude_orchestrator.bob.observability import span
+from claude_orchestrator.bob.cost_tracker import (
+    extract_total_cost_usd_from_stream_json,
+    record_external_cost_in_context,
+)
 from claude_orchestrator.bob.sandbox.executor import SubprocessExecutor
 from claude_orchestrator.bob.sandbox.host import HostExecutor
+from claude_orchestrator.bob.signals import is_shutdown_requested
 from claude_orchestrator.bob.state_io import append_jsonl
 from claude_orchestrator.bob.verifiers.protocol import VerifyResult
 from claude_orchestrator.models import Feature
@@ -96,6 +102,58 @@ def _render_prompt(
     )
 
 
+_AUTOCOMMIT_EXCLUDES = (
+    # glob magic matches the pattern at any depth from the worktree root
+    # (default magic requires a directory level, so `**/*.pyc` misses a
+    # top-level `mod.pyc`).
+    ":(exclude,glob)**/__pycache__/**",
+    ":(exclude,glob)**/__pycache__",
+    ":(exclude,glob)**/*.pyc",
+    ":(exclude,glob)**/*.pyo",
+    ":(exclude,glob)*.pyc",
+    ":(exclude,glob)*.pyo",
+    ":(exclude,glob)**/.pytest_cache/**",
+    ":(exclude,glob)**/.mypy_cache/**",
+    ":(exclude,glob)**/.ruff_cache/**",
+    ":(exclude,glob)**/node_modules/**",
+    ":(exclude,glob)**/.DS_Store",
+)
+
+
+def _autocommit_iteration(workspace: Path, *, iteration: int) -> None:
+    """Stage + commit any uncommitted worktree changes after a green
+    verifier result. No-op if the index is clean. Necessary under
+    `--sandbox docker` because the inner claude can't reach the host's
+    `.git` directory and so can't commit its own work.
+
+    Excludes common build-cache patterns even when the project lacks a
+    .gitignore — committing __pycache__/*.pyc into source-control would
+    correctly draw an Orchestra rejection on hygiene grounds.
+    """
+    try:
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=str(workspace), capture_output=True, text=True, timeout=30,
+        )
+        if status.returncode != 0 or not status.stdout.strip():
+            return  # nothing to commit
+        subprocess.run(
+            ["git", "add", "--", ".", *_AUTOCOMMIT_EXCLUDES],
+            cwd=str(workspace), capture_output=True, text=True, timeout=30,
+        )
+        subprocess.run(
+            ["git", "-c", "user.email=bob@local",
+             "-c", "user.name=Bob (autocommit)",
+             "commit", "-m", f"mcloop iter {iteration}: verifier green"],
+            cwd=str(workspace), capture_output=True, text=True, timeout=30,
+        )
+    except (subprocess.SubprocessError, OSError):
+        # Don't let an autocommit failure mask a successful iteration; the
+        # verifier already returned ok, so the work is real. Orchestra will
+        # see the empty diff and reject, surfacing the issue to the user.
+        pass
+
+
 class McLoopRunner:
     def __init__(
         self,
@@ -150,6 +208,17 @@ class McLoopRunner:
         consecutive_inconclusive = 0  # NEW
 
         for i in range(1, self.max_iterations + 1):
+            # Poll shutdown before each iteration so Ctrl-C is responsive.
+            # Without this, after the first SIGINT McLoop continues iterating
+            # (each `claude -p` ignores propagated SIGINT) until max_iterations
+            # — a frustrating "I pressed Ctrl-C but it kept spending money".
+            if is_shutdown_requested():
+                return McLoopResult(
+                    outcome="error",
+                    iterations=i - 1,
+                    last_reason="shutdown requested between iterations",
+                    last_status=None,
+                )
             with span("bob.mcloop.iter", attrs={
                 "feature_id": feature.id,
                 "iteration": i,
@@ -174,6 +243,14 @@ class McLoopRunner:
                     )
 
                 stdout = proc.stdout
+                cli_cost = extract_total_cost_usd_from_stream_json(stdout or "")
+                if cli_cost is not None:
+                    record_external_cost_in_context(
+                        provider="anthropic_cli",
+                        model=os.environ.get("BOB_MCLOOP_MODEL", "claude-cli"),
+                        cost_usd=cli_cost,
+                        phase="mcloop",
+                    )
 
                 # Persist stdout + stderr for debugging.
                 log_path = feature_dir / f"iter-{i}.log"
@@ -194,6 +271,17 @@ class McLoopRunner:
                     "reason": verify_result.reason[:1000],
                     "ts": datetime.now(UTC).isoformat(),
                 })
+
+                # If the verifier passed, auto-commit any uncommitted changes
+                # on the host. Under --sandbox docker the inner claude can't
+                # commit (the worktree's .git pointer references a host path
+                # not mounted in the container) — without this, Orchestra's
+                # diff capture comes back empty and the feature is rejected.
+                # Harmless under --sandbox host since claude would already
+                # have committed; `git commit` on an empty index is a no-op
+                # we explicitly check for.
+                if verify_result.status == "ok":
+                    _autocommit_iteration(workspace, iteration=i)
 
                 if verify_result.status == "inconclusive":
                     consecutive_inconclusive += 1
