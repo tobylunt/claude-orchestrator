@@ -1,0 +1,45 @@
+# Bob runtime image — copy this to `bob.dockerfile` in your project root and Bob
+# will auto-detect and build from it when invoked with --sandbox docker.
+#
+# This image is used as the sandbox for McLoop iterations (real `claude -p`
+# subprocesses) so we need:
+#   1. Node.js (claude CLI runtime)
+#   2. The claude CLI itself
+#   3. git (for worktree operations)
+#   4. Whatever language toolchain your project uses
+#
+# IMPORTANT: claude inside the container needs access to your Anthropic auth.
+# When you run `bob run --sandbox docker`, mount your config:
+#
+#   docker run ... -v $HOME/.claude:/root/.claude:ro ...
+#
+# Bob's DockerExecutor doesn't do this automatically (M9 todo); for now you
+# may need to add the mount via BOB_DOCKER_EXTRA_ARGS or pass `--add-host`
+# entries to reach api.anthropic.com.
+
+FROM python:3.10-slim
+
+# Base tooling
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js (claude CLI runtime)
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install the Claude Code CLI (or pin a specific version)
+RUN npm install -g @anthropic-ai/claude-code
+
+# Project-specific Python deps
+COPY requirements.txt /tmp/requirements.txt
+RUN if [ -f /tmp/requirements.txt ]; then \
+        pip install --no-cache-dir -r /tmp/requirements.txt; \
+    fi
+
+# Set up a non-root user for safer execution
+RUN useradd -m -s /bin/bash bob
+USER bob
+
+WORKDIR /workspace
