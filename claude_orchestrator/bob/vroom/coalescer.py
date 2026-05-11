@@ -2,10 +2,24 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Literal
 
 from claude_orchestrator.models import Finding
+
+_AUDITOR_PREFIX_RE = re.compile(r"^(claude|codex|semgrep|pr_agent|architect|security)[._-]")
+
+
+def _normalize_rule_id(rule_id: str) -> str:
+    """Strip auditor-prefix so the same semantic rule clusters across auditors.
+
+    Examples:
+      claude.sql-injection  → sql-injection
+      codex.sql-injection   → sql-injection
+      semgrep.sql.unsafe    → sql.unsafe  (NB: only first segment removed)
+    """
+    return _AUDITOR_PREFIX_RE.sub("", rule_id, count=1)
 
 
 _SEVERITY_ORDER = {
@@ -52,7 +66,7 @@ def coalesce_findings(
 
     for group in deduped:
         rep = group[0]
-        key = (rep.rule_id, rep.location.uri)
+        key = (_normalize_rule_id(rep.rule_id), rep.location.uri)
         existing = by_key.setdefault(key, [])
         # Find a cluster within proximity of rep.location.start_line.
         attached = False

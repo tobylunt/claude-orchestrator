@@ -86,3 +86,56 @@ def test_cluster_records_consensus_count():
     ]
     clusters = coalesce_findings(findings)
     assert clusters[0].consensus_count == 3
+
+
+def test_coalesce_clusters_findings_with_normalized_rule_ids():
+    """claude.sql-injection + codex.sql-injection at the same line should cluster."""
+    findings = [
+        _f(rule="claude.sql-injection", uri="app.py", line=13,
+           severity="critical", auditor="claude_architect", fp="c1"),
+        _f(rule="codex.sql-injection", uri="app.py", line=13,
+           severity="critical", auditor="codex_security", fp="c2"),
+    ]
+    clusters = coalesce_findings(findings)
+    assert len(clusters) == 1
+    cluster = clusters[0]
+    assert sorted(cluster.auditors) == ["claude_architect", "codex_security"]
+    assert cluster.consensus_count == 2
+
+
+def test_coalesce_normalizes_with_proximity():
+    """Same semantic issue at nearby lines should still cluster as consensus=2."""
+    findings = [
+        _f(rule="claude.command-injection", uri="app.py", line=20,
+           severity="critical", auditor="claude_architect", fp="c1"),
+        _f(rule="codex.command-injection", uri="app.py", line=22,
+           severity="critical", auditor="codex_security", fp="c2"),
+    ]
+    clusters = coalesce_findings(findings, proximity=5)
+    assert len(clusters) == 1
+    assert clusters[0].consensus_count == 2
+
+
+def test_coalesce_keeps_different_rule_classes_separate():
+    """Different rule classes (sql-injection vs command-injection) should NOT cluster."""
+    findings = [
+        _f(rule="claude.sql-injection", uri="app.py", line=13,
+           severity="critical", auditor="claude_architect", fp="c1"),
+        _f(rule="codex.command-injection", uri="app.py", line=13,
+           severity="critical", auditor="codex_security", fp="c2"),
+    ]
+    clusters = coalesce_findings(findings)
+    assert len(clusters) == 2  # different rule classes, distinct clusters
+
+
+def test_coalesce_preserves_original_rule_id_in_findings():
+    """The Finding's original rule_id should be preserved even after clustering."""
+    findings = [
+        _f(rule="claude.sql-injection", uri="app.py", line=13,
+           severity="critical", auditor="claude_architect", fp="c1"),
+        _f(rule="codex.sql-injection", uri="app.py", line=13,
+           severity="critical", auditor="codex_security", fp="c2"),
+    ]
+    clusters = coalesce_findings(findings)
+    rule_ids = {f.rule_id for f in clusters[0].findings}
+    assert rule_ids == {"claude.sql-injection", "codex.sql-injection"}
