@@ -22,11 +22,18 @@ from pathlib import Path
 # Without this whitelist, DockerExecutor.run(env=None) emits zero -e flags,
 # the inner claude/codex subprocess can't authenticate, and McLoop burns all
 # its iterations with no output. Callers can override by passing env=dict.
+#
+# Notable absences:
+# - HOME: the host's HOME (e.g., /Users/tobiaslunt on macOS) doesn't exist
+#   inside the container. Forwarding it makes claude hang waiting to read or
+#   write ~/.claude/... at an unmapped path. run() sets HOME=/tmp inside the
+#   container explicitly so config writes have somewhere to go.
+# - PATH: the host PATH references binaries on the host filesystem that
+#   aren't present in the container. The container's image-provided PATH is
+#   what should win.
 _DEFAULT_FORWARD_ENV = (
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
-    "HOME",
-    "PATH",
     "OTEL_EXPORTER_OTLP_ENDPOINT",
     "OTEL_SERVICE_NAME",
 )
@@ -135,7 +142,12 @@ class DockerExecutor:
         # Env vars: explicit dict if provided, otherwise forward a whitelist
         # from the host. Without this, env=None means "no env in container"
         # and the inner subprocess can't authenticate to Anthropic/OpenAI.
-        runtime_env = env if env is not None else _build_forwarded_env()
+        runtime_env = dict(env) if env is not None else _build_forwarded_env()
+        # Force HOME to a writable container path. The Docker --user flag
+        # uses an unmapped UID (no /etc/passwd entry), so HOME defaults to
+        # "/" — which is unwritable — and tools like `claude` silently hang
+        # trying to write ~/.claude/... Caller-supplied HOME wins.
+        runtime_env.setdefault("HOME", "/tmp")
         for key, value in runtime_env.items():
             docker_args.extend(["-e", f"{key}={value}"])
 
