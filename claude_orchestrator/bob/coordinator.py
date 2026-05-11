@@ -191,12 +191,20 @@ class Coordinator:
             # will be picked up).
 
     def _run_feature(self, feature: Feature, feature_dir: Path, run_id: str) -> None:
-        with span("bob.feature", attrs={
-            "feature_id": feature.id,
-            "feature_name": feature.name,
-            "task_type": str(feature.task_type),
-        }):
-            self._run_feature_inner(feature, feature_dir, run_id)
+        from claude_orchestrator.bob.cost_tracker import set_feature_context
+        # Bind feature_id for cost rows so orchestra/mcloop calls inside this
+        # block roll up per-feature. Cleared after the feature finishes so the
+        # next feature's calls aren't mis-attributed.
+        set_feature_context(feature.id)
+        try:
+            with span("bob.feature", attrs={
+                "feature_id": feature.id,
+                "feature_name": feature.name,
+                "task_type": str(feature.task_type),
+            }):
+                self._run_feature_inner(feature, feature_dir, run_id)
+        finally:
+            set_feature_context(None)
 
     def _run_feature_inner(self, feature: Feature, feature_dir: Path, run_id: str) -> None:
         self._set_cursor("mcloop", feature.id, run_id)

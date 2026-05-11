@@ -8,6 +8,9 @@ from claude_orchestrator.bob.cost_tracker import (
     aggregate_costs,
     estimate_cost,
     record_call,
+    record_call_in_context,
+    set_feature_context,
+    set_run_context,
 )
 
 
@@ -141,3 +144,42 @@ def test_aggregate_costs_handles_missing_file(tmp_path: Path):
     # bob_dir doesn't exist
     agg = aggregate_costs(bob_dir)
     assert agg["total_calls"] == 0
+
+
+def test_record_call_in_context_inherits_feature_id(tmp_path: Path):
+    """set_feature_context should make orchestra/mcloop call-sites attribute
+    their costs to the right feature without each call-site passing it."""
+    bob_dir = tmp_path / ".bob"
+    bob_dir.mkdir()
+    set_run_context(run_id="run-1", bob_dir=bob_dir)
+    set_feature_context(7)
+    try:
+        record_call_in_context(
+            provider="anthropic", model="claude-sonnet-4-6",
+            tokens_in=100, tokens_out=50, phase="orchestra",
+        )
+    finally:
+        set_feature_context(None)
+
+    rows = [json.loads(l) for l in (bob_dir / "costs.jsonl").read_text().splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["feature_id"] == 7
+
+
+def test_record_call_in_context_explicit_feature_id_wins(tmp_path: Path):
+    """An explicit feature_id should override the contextvar."""
+    bob_dir = tmp_path / ".bob"
+    bob_dir.mkdir()
+    set_run_context(run_id="run-1", bob_dir=bob_dir)
+    set_feature_context(7)
+    try:
+        record_call_in_context(
+            provider="anthropic", model="claude-sonnet-4-6",
+            tokens_in=10, tokens_out=10, phase="orchestra",
+            feature_id=99,
+        )
+    finally:
+        set_feature_context(None)
+
+    rows = [json.loads(l) for l in (bob_dir / "costs.jsonl").read_text().splitlines()]
+    assert rows[0]["feature_id"] == 99

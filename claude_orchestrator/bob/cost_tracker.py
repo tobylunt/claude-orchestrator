@@ -103,12 +103,25 @@ _current_run_id: contextvars.ContextVar[str] = contextvars.ContextVar(
 _current_bob_dir: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
     "bob_dir", default=None
 )
+_current_feature_id: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "bob_feature_id", default=None
+)
 
 
 def set_run_context(*, run_id: str, bob_dir: Path) -> None:
     """Set the run context for cost recording. Called by Coordinator at run start."""
     _current_run_id.set(run_id)
     _current_bob_dir.set(bob_dir)
+
+
+def set_feature_context(feature_id: int | None) -> None:
+    """Set the ambient feature_id for cost rows produced inside a feature's phases.
+
+    Without this, the orchestra/mcloop call-sites (which don't know which feature
+    they belong to) record `feature_id=None`, defeating per-feature cost rollup.
+    Pass None to clear (e.g., between features or after run completion).
+    """
+    _current_feature_id.set(feature_id)
 
 
 def record_call_in_context(
@@ -124,6 +137,8 @@ def record_call_in_context(
     bob_dir = _current_bob_dir.get()
     if bob_dir is None:
         return
+    if feature_id is None:
+        feature_id = _current_feature_id.get()
     record_call(
         bob_dir=bob_dir,
         run_id=_current_run_id.get(),
