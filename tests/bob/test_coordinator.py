@@ -605,3 +605,65 @@ def test_coordinator_does_not_overwrite_merged_features_on_rerun(project_root: P
     # mcloop.call_count was 1 from the first run; must still be 1 after the second.
     assert mcloop.call_count == 1
     assert orchestra.call_count == 1
+
+
+def test_coordinator_reuses_run_id_on_resume(project_root: Path):
+    """On resume, the run_id from cursor.json must be reused so cost rows
+    and run-log events from before+after the crash group under one run."""
+    import json
+    from claude_orchestrator.bob.coordinator import Coordinator
+    from claude_orchestrator.bob.hitl.gates import GateRegistry
+
+    spec = _spec_with_features("a")
+    duplo = MagicMock(return_value=spec)
+    mcloop = MagicMock(return_value=McLoopResult(
+        outcome="exit_signal", iterations=1,
+        last_reason="ok", last_status="ok",
+    ))
+    orchestra = MagicMock(return_value=Verdict(
+        feature_id=1, decision="approve", confidence=1.0,
+        debate_log_path=project_root / ".bob" / "fake.json",
+        judge_reasoning="lgtm",
+    ))
+
+    # Seed cursor.json as if a prior crash left work mid-flight.
+    (project_root / ".bob").mkdir(parents=True, exist_ok=True)
+    prior_run_id = "prior-run-deadbeef"
+    (project_root / ".bob" / "cursor.json").write_text(json.dumps({
+        "run_id": prior_run_id, "current_phase": "mcloop", "current_feature_id": 1,
+    }))
+
+    coord = Coordinator(
+        project_root=project_root, duplo=duplo, mcloop=mcloop,
+        orchestra=orchestra, gates=GateRegistry(disabled={"post_duplo"}),
+        verbose=False,
+    )
+    coord.run(RunScope(includes_duplo=True))
+
+    events = [json.loads(l) for l in (project_root / ".bob" / "run-log.jsonl").read_text().splitlines()]
+    run_ids = {e.get("run_id") for e in events if e.get("run_id")}
+    assert run_ids == {prior_run_id}, f"resume should reuse run_id, got {run_ids}"
+
+
+def test_coordinator_event_field_truncated_to_pipe_buf_safe(project_root: Path):
+    """A very long string field in event details must not raise ValueError
+    from append_jsonl's PIPE_BUF safety check — that crash would leave the
+    feature stuck IN_PROGRESS with no error logged. Truncate defensively."""
+    import json as _json
+    from claude_orchestrator.bob.coordinator import Coordinator
+    from claude_orchestrator.bob.hitl.gates import GateRegistry
+
+    coord = Coordinator(
+        project_root=project_root, duplo=MagicMock(), mcloop=MagicMock(),
+        orchestra=MagicMock(), gates=GateRegistry(),
+        verbose=False,
+    )
+    coord._current_run_id = "test-run"
+    long_reason = "x" * 10_000  # 10 KB — would exceed the 4096-byte PIPE_BUF safe limit
+    # Should NOT raise.
+    coord._log_event("mcloop_finished", {"feature_id": 1, "reason": long_reason})
+
+    events = [_json.loads(l) for l in (project_root / ".bob" / "run-log.jsonl").read_text().splitlines()]
+    assert events[-1]["event"] == "mcloop_finished"
+    assert len(events[-1]["reason"]) <= coord._EVENT_FIELD_LIMIT + len("… [truncated]")
+    assert events[-1]["reason"].endswith("… [truncated]")

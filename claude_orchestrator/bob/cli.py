@@ -133,12 +133,18 @@ def _cmd_run(args: argparse.Namespace) -> int:
             "vroom",
             "--project", str(project_root),
             "--interval", "1800",
+            "--sandbox", sandbox_tier,
         ]
         # Pass through stub env vars so the child uses the same offline mode if any.
         child_env = os.environ.copy()
         if yolo and yolo.enabled:
             child_env["BOB_VROOM_YOLO_ENABLED"] = "1"
             child_env["BOB_VROOM_YOLO_SEVERITY"] = yolo.vroom_severity
+            child_env["BOB_YOLO_MAX_INCONCLUSIVE"] = str(yolo.max_inconclusive)
+        # Forward --otel-endpoint CLI arg as env to the subprocess so it can
+        # call setup_tracing() and emit spans to the same backend.
+        if args.otel_endpoint:
+            child_env["OTEL_EXPORTER_OTLP_ENDPOINT"] = args.otel_endpoint
         vroom_proc = _subprocess.Popen(
             vroom_cmd,
             stdout=_subprocess.DEVNULL,
@@ -231,6 +237,7 @@ def _cmd_vroom_start(args: argparse.Namespace) -> int:
     import uuid
     from claude_orchestrator.bob.cost_tracker import set_run_context
     from claude_orchestrator.bob.dotenv_loader import load_env_files
+    from claude_orchestrator.bob.observability import setup_tracing
     from claude_orchestrator.bob.signals import install_handlers, is_shutdown_requested
     from claude_orchestrator.bob.vroom.auditor_pool import AuditorPool
     from claude_orchestrator.bob.vroom.daemon import VroomDaemon
@@ -246,6 +253,11 @@ def _cmd_vroom_start(args: argparse.Namespace) -> int:
 
     # Auto-load .env files before reading any env vars.
     load_env_files(project_root=project_root, cwd=Path.cwd())
+
+    # Wire OTEL in the subprocess so span() calls actually emit.
+    # Without this, the daemon's bob.vroom.cycle / bob.mcloop.iter spans are
+    # silent no-ops even when the parent process emits to a backend.
+    setup_tracing(service_name="bob-vroom")
 
     # Set the cost-tracking run context so auditor API calls land in
     # costs.jsonl. The daemon doesn't go through Coordinator.
@@ -295,15 +307,23 @@ def _cmd_vroom_start(args: argparse.Namespace) -> int:
         )
     triage_gate = VroomTriageGate(yolo=yolo)
 
-    # The fix-loop spawns isolated McLoops on vroom/<id> branches.
+    # The fix-loop spawns isolated McLoops on vroom/<id> branches. The
+    # sandbox tier propagates from the parent `bob run` via --sandbox or
+    # BOB_SANDBOX_TIER so YOLO+docker doesn't silently fall back to host.
     from claude_orchestrator.bob.mcloop.runner import McLoopRunner
     from claude_orchestrator.bob.verifiers.python_pytest import PythonPytestVerifier
-    from claude_orchestrator.bob.sandbox.host import HostExecutor
+    from claude_orchestrator.bob.wiring import _build_executor
 
+    sandbox_tier = (
+        getattr(args, "sandbox", None)
+        or os.environ.get("BOB_SANDBOX_TIER")
+        or "host"
+    )
+    executor = _build_executor(sandbox_tier, project_root=project_root)
     runner = McLoopRunner(
         claude_cmd="claude",
         max_iterations=10,
-        executor=HostExecutor(),
+        executor=executor,
     )
     verifier = PythonPytestVerifier()
 
@@ -323,9 +343,11 @@ def _cmd_vroom_start(args: argparse.Namespace) -> int:
             ),
             status=FeatureStatus.PENDING,
         )
+        from claude_orchestrator.bob.vroom.fix_loop import render_finding_spec
         vroom_feature_dir = project_root / ".bob" / "vroom-features" / branch_name.replace("/", "-")
         vroom_feature_dir.mkdir(parents=True, exist_ok=True)
-        for f in ("spec.md", "activity.md", "failed_attempts.md", "verifier-results.jsonl"):
+        (vroom_feature_dir / "spec.md").write_text(render_finding_spec(finding))
+        for f in ("activity.md", "failed_attempts.md", "verifier-results.jsonl"):
             (vroom_feature_dir / f).write_text("")
         master_spec = project_root / ".bob" / "spec.md"
         if not master_spec.exists():
@@ -401,6 +423,7 @@ def _cmd_vroom_now(args: argparse.Namespace) -> int:
     import uuid
     from claude_orchestrator.bob.cost_tracker import set_run_context
     from claude_orchestrator.bob.dotenv_loader import load_env_files
+    from claude_orchestrator.bob.observability import setup_tracing
     from claude_orchestrator.bob.vroom.auditor_pool import AuditorPool
     from claude_orchestrator.bob.vroom.auditors.semgrep import SemgrepAuditor
     from claude_orchestrator.bob.vroom.audit_cycle import VroomAuditCycle
@@ -410,6 +433,9 @@ def _cmd_vroom_now(args: argparse.Namespace) -> int:
 
     # Auto-load .env files before reading any env vars.
     load_env_files(project_root=project_root, cwd=Path.cwd())
+
+    # Same OTEL hookup as _cmd_vroom_start; without this, vroom spans are no-ops.
+    setup_tracing(service_name="bob-vroom")
 
     # Set the cost-tracking run context so auditor API calls land in
     # costs.jsonl. `bob vroom now` doesn't go through Coordinator, so we
@@ -695,6 +721,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--watch-main-ref",
         action="store_true",
         help="trigger a cycle when .git/refs/heads/main changes (post-merge detection)",
+    )
+    vroom.add_argument(
+        "--sandbox",
+        choices=["host", "docker", "devcontainer"],
+        default=None,
+        help="sandbox tier for the fix-loop McLoop (default: $BOB_SANDBOX_TIER or host)",
     )
     vroom.set_defaults(func=_cmd_vroom_start)
 

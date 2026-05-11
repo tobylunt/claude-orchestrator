@@ -27,6 +27,41 @@ from claude_orchestrator.bob.worktree import (
 from claude_orchestrator.models import Finding
 
 
+def render_finding_spec(finding: Finding, *, auditors: list[str] | None = None) -> str:
+    """Render a Vroom finding into a McLoop-readable feature spec.
+
+    Without this, the McLoop prompt template reads an empty spec.md and the
+    agent has no context for what to fix.
+    """
+    loc = finding.location
+    aud_line = (
+        f"- **Auditors flagging this:** {', '.join(auditors)}\n" if auditors else ""
+    )
+    proposed = (
+        f"\n## Proposed fix (from auditor)\n\n{finding.proposed_fix}\n"
+        if finding.proposed_fix
+        else ""
+    )
+    return f"""# Fix Vroom finding: {finding.rule_id}
+
+## Finding
+
+- **Rule:** `{finding.rule_id}`
+- **Severity:** {finding.severity}
+- **Location:** `{loc.uri}:{loc.start_line}` (through line {loc.end_line})
+{aud_line}
+## Message
+
+{finding.message}
+{proposed}
+## Success criteria
+
+- Repository's pytest suite passes (all tests green) after the fix.
+- The vulnerability identified above is actually addressed in the code (don't just edit tests around it).
+- Keep the diff minimal and scoped to this finding — large refactors will exceed the auto-merge threshold.
+"""
+
+
 @dataclass(frozen=True)
 class FixOutcome:
     finding_id: str

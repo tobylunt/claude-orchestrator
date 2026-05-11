@@ -7,11 +7,13 @@ without touching argparse code.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
 from claude_orchestrator.bob.coordinator import Coordinator
 from claude_orchestrator.bob.duplo.markdown_parser import parse_markdown_spec
+from claude_orchestrator.bob.state_io import append_jsonl
 from claude_orchestrator.bob.hitl.gates import GateRegistry, PostDuploGate
 from claude_orchestrator.bob.mcloop.runner import McLoopResult, McLoopRunner
 from claude_orchestrator.bob.orchestra.stub import OrchestraStub
@@ -102,7 +104,12 @@ def _build_executor(tier: str, project_root: Path | None = None):
         cpus = float(os.environ.get("BOB_DOCKER_CPUS", "4"))
         memory = os.environ.get("BOB_DOCKER_MEMORY", "8g")
         network = os.environ.get("BOB_DOCKER_NETWORK")  # None means default
-        apply_allowlist = os.environ.get("BOB_DOCKER_ALLOWLIST", "0") == "1"
+        # BOB_DOCKER_EXTRA_ARGS is a shell-style string (e.g. for extra -v mounts).
+        # Previously ignored — the dockerfile example documents using it to
+        # mount ~/.claude into the container, but _build_executor never read it.
+        extra_args_raw = os.environ.get("BOB_DOCKER_EXTRA_ARGS", "")
+        import shlex
+        extra_args = shlex.split(extra_args_raw) if extra_args_raw else []
 
         # Auto-detect bob.dockerfile in project root.
         dockerfile = None
@@ -115,7 +122,7 @@ def _build_executor(tier: str, project_root: Path | None = None):
             image=image, cpus=cpus, memory=memory,
             network=network,
             dockerfile=dockerfile,
-            apply_default_allowlist=apply_allowlist,
+            extra_args=extra_args,
         )
     if tier == "devcontainer":
         from claude_orchestrator.bob.sandbox.devcontainer import DevcontainerExecutor
@@ -171,7 +178,55 @@ def build_coordinator(
         else:
             # Single-file markdown path (M2a behavior preserved).
             spec = parse_markdown_spec(spec_path)
-        spec.rubric_meta_check_passed = True
+        # Meta-rubric coverage check (spec §6.6): ask an LLM judge whether the
+        # assigned verifier actually verifies each feature's success criteria.
+        # The YOLO PostDuploGate auto-approve requires this to be True; in
+        # default mode the user still sees the gate and can override.
+        from claude_orchestrator.bob.duplo.judge_anthropic import (
+            AnthropicJudge, StubJudge,
+        )
+        from claude_orchestrator.bob.duplo.meta_rubric import MetaRubricChecker
+
+        use_stub = os.environ.get("BOB_USE_STUB_DUPLO", "0") == "1"
+        judge = StubJudge() if use_stub else AnthropicJudge()
+        checker = MetaRubricChecker(judge)
+
+        judgments_path = (project_root / ".bob" / "rubric-judgments.jsonl")
+        judgments_path.parent.mkdir(parents=True, exist_ok=True)
+        all_adequate = True
+        for feature in spec.features:
+            j = checker.check(feature)
+            append_jsonl(judgments_path, {
+                "feature_id": feature.id,
+                "feature_name": feature.name,
+                "verifier_id": feature.verification_plan.verifier_id,
+                "adequate": j.adequate,
+                "missing": j.missing,
+                "reasoning": j.reasoning,
+                "malformed": j.malformed,
+                # Keep the raw judge response on disk so an unexplained
+                # 'inadequate' verdict is debuggable post-hoc.
+                "raw_response": (j.raw_response or "")[:2000],
+            })
+            if not j.adequate:
+                all_adequate = False
+                if j.malformed:
+                    print(
+                        f"warning: MALFORMED rubric verdict for feature "
+                        f"{feature.id} ({feature.name}) — judge said "
+                        f"'inadequate' with no missing-criteria or reasoning. "
+                        f"This is treated as a block, but the explanation is "
+                        f"absent; inspect .bob/rubric-judgments.jsonl "
+                        f"'raw_response' before approving manually.",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        f"warning: rubric coverage inadequate for feature "
+                        f"{feature.id} ({feature.name}): {j}",
+                        file=sys.stderr,
+                    )
+        spec.rubric_meta_check_passed = all_adequate
         return spec
 
     def mcloop_callable(*, feature: Feature, workspace: Path,

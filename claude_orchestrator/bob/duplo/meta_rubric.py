@@ -21,10 +21,21 @@ class CoverageJudgment:
     adequate: bool
     missing: list[str]
     reasoning: str
+    raw_response: str | None = None
+    # True when verdict=inadequate but the judge provided no actionable
+    # explanation (empty missing AND empty reasoning). Caller should surface
+    # this differently from a "real" inadequate verdict — silently propagating
+    # an unexplained 'inadequate' as YOLO-block input is hostile UX.
+    malformed: bool = False
 
     def __str__(self) -> str:
         if self.adequate:
             return f"adequate: {self.reasoning}"
+        if self.malformed:
+            return (
+                "malformed inadequate verdict (judge returned no explanation); "
+                f"raw response: {(self.raw_response or '')[:200]!r}"
+            )
         return f"inadequate; missing: {self.missing}; reasoning: {self.reasoning}"
 
 
@@ -61,8 +72,17 @@ class MetaRubricChecker:
         verdict = result.get("verdict", "inadequate")
         missing = list(result.get("missing", []))
         reasoning = result.get("reasoning", "")
+        raw = result.get("_raw")
+        adequate = (verdict == "adequate")
+        # Fail-loud on inadequate-without-explanation: judge gave a thumbs-down
+        # but no actionable detail. We still set adequate=False so the YOLO
+        # gate blocks correctly, but the malformed flag tells the wiring layer
+        # to print a louder warning that includes the raw response.
+        malformed = (not adequate) and (not missing) and (not reasoning.strip())
         return CoverageJudgment(
-            adequate=(verdict == "adequate"),
+            adequate=adequate,
             missing=missing,
             reasoning=reasoning,
+            raw_response=raw,
+            malformed=malformed,
         )
