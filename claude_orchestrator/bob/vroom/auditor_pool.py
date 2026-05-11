@@ -75,11 +75,12 @@ class AuditorPool:
                     auditor = futures[future]
                     # Surface auditor failures as INFO-severity findings so they're visible.
                     from claude_orchestrator.models import SARIFLocation
+                    msg = f"auditor {auditor.id} raised: {e}"
                     results.append(Finding(
                         rule_id=f"vroom.auditor_failed:{auditor.id}",
                         severity="info",
                         location=SARIFLocation(uri="(internal)", start_line=0),
-                        message=f"auditor {auditor.id} raised: {e}",
+                        message=msg[:500],
                         proposed_fix=None,
                         auditor=auditor.id,
                         fingerprint=f"{auditor.id}:failed",

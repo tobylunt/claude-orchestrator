@@ -15,6 +15,7 @@ This is the M1 implementation. M2 wraps in sandbox tier 2 (Docker).
 from __future__ import annotations
 
 import re
+import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -33,6 +34,10 @@ else:
 from datetime import datetime
 
 from claude_orchestrator.bob.observability import span
+from claude_orchestrator.bob.cost_tracker import (
+    extract_total_cost_usd_from_stream_json,
+    record_external_cost_in_context,
+)
 from claude_orchestrator.bob.sandbox.executor import SubprocessExecutor
 from claude_orchestrator.bob.sandbox.host import HostExecutor
 from claude_orchestrator.bob.signals import is_shutdown_requested
@@ -238,6 +243,14 @@ class McLoopRunner:
                     )
 
                 stdout = proc.stdout
+                cli_cost = extract_total_cost_usd_from_stream_json(stdout or "")
+                if cli_cost is not None:
+                    record_external_cost_in_context(
+                        provider="anthropic_cli",
+                        model=os.environ.get("BOB_MCLOOP_MODEL", "claude-cli"),
+                        cost_usd=cli_cost,
+                        phase="mcloop",
+                    )
 
                 # Persist stdout + stderr for debugging.
                 log_path = feature_dir / f"iter-{i}.log"

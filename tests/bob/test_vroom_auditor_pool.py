@@ -79,3 +79,17 @@ def test_auditor_pool_runs_in_parallel(tmp_path: Path):
     pool.run(workspace=tmp_path, changed_files=[])
     elapsed = time.time() - start
     assert elapsed < 0.35, f"expected parallel (~0.2s), got {elapsed}s — sequential would be ~0.4s"
+
+
+def test_auditor_pool_surfaces_auditor_exceptions(tmp_path: Path):
+    """Auditor failures must not masquerade as a clean zero-finding cycle."""
+
+    class RaisingAuditor(FakeAuditor):
+        def audit(self, workspace: Path, changed_files: list[Path]) -> list[Finding]:
+            raise RuntimeError("api unavailable")
+
+    pool = AuditorPool([RaisingAuditor("codex", [])])
+    findings = pool.run(workspace=tmp_path, changed_files=[])
+    assert len(findings) == 1
+    assert findings[0].rule_id == "vroom.auditor_failed:codex"
+    assert "api unavailable" in findings[0].message

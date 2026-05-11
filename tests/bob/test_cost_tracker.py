@@ -7,7 +7,9 @@ import pytest
 from claude_orchestrator.bob.cost_tracker import (
     aggregate_costs,
     estimate_cost,
+    extract_total_cost_usd_from_stream_json,
     record_call,
+    record_external_cost,
     record_call_in_context,
     set_feature_context,
     set_run_context,
@@ -78,6 +80,34 @@ def test_record_call_with_unknown_model_records_none_cost(tmp_path: Path):
     )
     rec = json.loads((bob_dir / "costs.jsonl").read_text().strip())
     assert rec["cost_usd"] is None
+
+
+def test_record_external_cost_records_direct_usd(tmp_path: Path):
+    bob_dir = tmp_path / ".bob"
+    bob_dir.mkdir()
+    record_external_cost(
+        bob_dir=bob_dir,
+        run_id="run-1",
+        provider="anthropic_cli",
+        model="claude-cli",
+        cost_usd=0.42,
+        phase="mcloop",
+        feature_id=3,
+    )
+
+    agg = aggregate_costs(bob_dir, group_by="phase")
+    assert agg["total_cost_usd"] == pytest.approx(0.42)
+    assert agg["groups"]["mcloop"]["total_cost_usd"] == pytest.approx(0.42)
+
+
+def test_extract_total_cost_usd_from_stream_json_uses_last_result():
+    stream = "\n".join([
+        '{"type": "assistant", "message": "working"}',
+        'not json',
+        '{"type": "result", "total_cost_usd": 0.12}',
+        '{"type": "result", "total_cost_usd": 0.34}',
+    ])
+    assert extract_total_cost_usd_from_stream_json(stream) == pytest.approx(0.34)
 
 
 def test_aggregate_costs_sums_total(tmp_path: Path):

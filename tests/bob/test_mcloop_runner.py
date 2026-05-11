@@ -3,6 +3,7 @@
 The runner spawns `claude -p` subprocesses. Tests use a stub `claude`
 shell script (created in tmp_path) to exercise the loop deterministically.
 """
+import json
 import subprocess
 from pathlib import Path
 from textwrap import dedent
@@ -10,6 +11,7 @@ from textwrap import dedent
 import pytest
 
 from claude_orchestrator.bob.mcloop.runner import McLoopRunner, McLoopResult
+from claude_orchestrator.bob.cost_tracker import set_feature_context, set_run_context
 from claude_orchestrator.bob.verifiers.protocol import PreflightResult, VerifyResult
 from claude_orchestrator.models import (
     Feature,
@@ -397,6 +399,52 @@ def test_runner_passes_stream_json_output_format(tmp_path: Path, monkeypatch):
     assert "--output-format" in args, f"missing output-format in: {args}"
     idx = args.index("--output-format")
     assert args[idx + 1] == "stream-json"
+
+
+def test_runner_records_claude_cli_stream_json_cost(tmp_path: Path):
+    """Claude CLI total_cost_usd should become a normal cost row."""
+    feature = _feature()
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    feature_dir = tmp_path / ".bob" / "features" / "001-t"
+    feature_dir.mkdir(parents=True)
+    (feature_dir / "spec.md").write_text("")
+    (feature_dir / "activity.md").write_text("")
+    (feature_dir / "failed_attempts.md").write_text("")
+    (feature_dir / "verifier-results.jsonl").write_text("")
+    bob_dir = tmp_path / ".bob"
+    master_spec = bob_dir / "spec.md"
+    master_spec.write_text("")
+
+    fake_claude = tmp_path / "claude"
+    fake_claude.write_text(dedent("""\
+        #!/bin/sh
+        echo '{"type":"result","total_cost_usd":0.36}'
+        echo '<promise>EXIT_SIGNAL</promise>'
+    """))
+    fake_claude.chmod(0o755)
+
+    set_run_context(run_id="run-1", bob_dir=bob_dir)
+    set_feature_context(feature.id)
+    try:
+        verifier = FakeVerifier([
+            VerifyResult(status="ok", reason="", artifacts=[], coverage_notes=None),
+        ])
+        runner = McLoopRunner(claude_cmd=str(fake_claude), max_iterations=1,
+                             per_iteration_timeout_s=10)
+        runner.run(
+            feature=feature, workspace=workspace,
+            master_spec=master_spec, feature_dir=feature_dir, verifier=verifier,
+        )
+    finally:
+        set_feature_context(None)
+
+    rows = [json.loads(line) for line in (bob_dir / "costs.jsonl").read_text().splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["provider"] == "anthropic_cli"
+    assert rows[0]["phase"] == "mcloop"
+    assert rows[0]["feature_id"] == feature.id
+    assert rows[0]["cost_usd"] == pytest.approx(0.36)
 
 
 def test_runner_logs_each_iteration_separately(tmp_path: Path):
