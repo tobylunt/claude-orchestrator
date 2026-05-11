@@ -97,11 +97,33 @@ def _render_prompt(
     )
 
 
+_AUTOCOMMIT_EXCLUDES = (
+    # glob magic matches the pattern at any depth from the worktree root
+    # (default magic requires a directory level, so `**/*.pyc` misses a
+    # top-level `mod.pyc`).
+    ":(exclude,glob)**/__pycache__/**",
+    ":(exclude,glob)**/__pycache__",
+    ":(exclude,glob)**/*.pyc",
+    ":(exclude,glob)**/*.pyo",
+    ":(exclude,glob)*.pyc",
+    ":(exclude,glob)*.pyo",
+    ":(exclude,glob)**/.pytest_cache/**",
+    ":(exclude,glob)**/.mypy_cache/**",
+    ":(exclude,glob)**/.ruff_cache/**",
+    ":(exclude,glob)**/node_modules/**",
+    ":(exclude,glob)**/.DS_Store",
+)
+
+
 def _autocommit_iteration(workspace: Path, *, iteration: int) -> None:
     """Stage + commit any uncommitted worktree changes after a green
     verifier result. No-op if the index is clean. Necessary under
     `--sandbox docker` because the inner claude can't reach the host's
     `.git` directory and so can't commit its own work.
+
+    Excludes common build-cache patterns even when the project lacks a
+    .gitignore — committing __pycache__/*.pyc into source-control would
+    correctly draw an Orchestra rejection on hygiene grounds.
     """
     try:
         status = subprocess.run(
@@ -111,7 +133,7 @@ def _autocommit_iteration(workspace: Path, *, iteration: int) -> None:
         if status.returncode != 0 or not status.stdout.strip():
             return  # nothing to commit
         subprocess.run(
-            ["git", "add", "-A"],
+            ["git", "add", "--", ".", *_AUTOCOMMIT_EXCLUDES],
             cwd=str(workspace), capture_output=True, text=True, timeout=30,
         )
         subprocess.run(

@@ -663,3 +663,57 @@ def test_runner_autocommits_uncommitted_changes_after_green_verifier(tmp_path: P
         check=True, capture_output=True, text=True,
     ).stdout
     assert "new.py" in diff, f"expected new.py in diff main..feature/x; got: {diff!r}"
+
+
+def test_autocommit_excludes_pycache_and_build_artifacts(tmp_path: Path):
+    """The autocommit must not stage __pycache__/*.pyc even when the project
+    lacks a .gitignore. Surfaced by the Docker dogfood: Orchestra rejected
+    a feature because autocommit had pulled in compiled-bytecode noise."""
+    import subprocess as sp
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    sp.run(["git", "init", "-b", "main", str(project)], check=True, capture_output=True)
+    (project / "README.md").write_text("hi\n")
+    sp.run(["git", "-C", str(project), "add", "."], check=True, capture_output=True)
+    sp.run(
+        ["git", "-C", str(project), "-c", "user.email=t@t.com",
+         "-c", "user.name=T", "commit", "-m", "init"],
+        check=True, capture_output=True,
+    )
+    workspace = project / "worktree"
+    sp.run(
+        ["git", "-C", str(project), "worktree", "add", str(workspace), "-b", "feature/y"],
+        check=True, capture_output=True,
+    )
+    # claude writes a source file + pytest leaves __pycache__ behind.
+    (workspace / "mod.py").write_text("def f(): return 1\n")
+    pycache = workspace / "__pycache__"
+    pycache.mkdir()
+    (pycache / "mod.cpython-310.pyc").write_bytes(b"\xfa\x00\x00\x00")
+    (workspace / "mod.pyc").write_bytes(b"\xfa\x00\x00\x00")
+
+    fake_claude = tmp_path / "claude"
+    fake_claude.write_text("#!/bin/sh\necho '<promise>EXIT_SIGNAL</promise>'\n")
+    fake_claude.chmod(0o755)
+    feature_dir = tmp_path / ".bob" / "features" / "001-t"
+    feature_dir.mkdir(parents=True)
+    for f in ("spec.md", "activity.md", "failed_attempts.md", "verifier-results.jsonl"):
+        (feature_dir / f).write_text("")
+    master_spec = tmp_path / ".bob" / "spec.md"
+    master_spec.write_text("")
+
+    runner = McLoopRunner(claude_cmd=str(fake_claude), max_iterations=1, per_iteration_timeout_s=10)
+    runner.run(
+        feature=_feature(), workspace=workspace,
+        master_spec=master_spec, feature_dir=feature_dir,
+        verifier=FakeVerifier([VerifyResult(status="ok", reason="", artifacts=[], coverage_notes=None)]),
+    )
+
+    diff_files = sp.run(
+        ["git", "-C", str(project), "diff", "--name-only", "main..feature/y"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert "mod.py" in diff_files
+    assert "__pycache__" not in diff_files
+    assert ".pyc" not in diff_files
