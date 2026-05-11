@@ -97,6 +97,37 @@ def record_call(
     append_jsonl(bob_dir / "costs.jsonl", record)
 
 
+def record_external_cost(
+    *,
+    bob_dir: Path,
+    run_id: str,
+    provider: str,
+    model: str,
+    cost_usd: float,
+    phase: str,
+    feature_id: int | None = None,
+    tokens_in: int = 0,
+    tokens_out: int = 0,
+) -> None:
+    """Append a cost row when the provider reports dollars directly.
+
+    Claude Code CLI stream-json reports `total_cost_usd` but not always token
+    counts. Recording the direct dollar value keeps `bob costs` from omitting
+    the most expensive McLoop path.
+    """
+    append_jsonl(bob_dir / "costs.jsonl", {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "run_id": run_id,
+        "provider": provider,
+        "model": model,
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
+        "cost_usd": float(cost_usd),
+        "phase": phase,
+        "feature_id": feature_id,
+    })
+
+
 _current_run_id: contextvars.ContextVar[str] = contextvars.ContextVar(
     "bob_run_id", default="(no_run)"
 )
@@ -149,6 +180,54 @@ def record_call_in_context(
         phase=phase,
         feature_id=feature_id,
     )
+
+
+def record_external_cost_in_context(
+    *,
+    provider: str,
+    model: str,
+    cost_usd: float,
+    phase: str,
+    feature_id: int | None = None,
+    tokens_in: int = 0,
+    tokens_out: int = 0,
+) -> None:
+    """Record a direct dollar cost using the active run context."""
+    bob_dir = _current_bob_dir.get()
+    if bob_dir is None:
+        return
+    if feature_id is None:
+        feature_id = _current_feature_id.get()
+    record_external_cost(
+        bob_dir=bob_dir,
+        run_id=_current_run_id.get(),
+        provider=provider,
+        model=model,
+        cost_usd=cost_usd,
+        phase=phase,
+        feature_id=feature_id,
+        tokens_in=tokens_in,
+        tokens_out=tokens_out,
+    )
+
+
+def extract_total_cost_usd_from_stream_json(text: str) -> float | None:
+    """Return the last `total_cost_usd` from Claude CLI stream-json output."""
+    total: float | None = None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or not line.startswith("{"):
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if row.get("type") != "result":
+            continue
+        cost = row.get("total_cost_usd")
+        if isinstance(cost, (int, float)):
+            total = float(cost)
+    return total
 
 
 def aggregate_costs(

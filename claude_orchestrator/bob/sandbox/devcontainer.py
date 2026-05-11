@@ -12,9 +12,11 @@ generate one.
 
 from __future__ import annotations
 
-import shutil
+import json
 import subprocess
 from pathlib import Path
+
+from claude_orchestrator.bob.sandbox.executor import build_forwarded_env
 
 
 class DevcontainerExecutor:
@@ -28,6 +30,34 @@ class DevcontainerExecutor:
         self.cli_cmd = cli_cmd
         self._up_done = False
 
+    def _devcontainer_json(self) -> Path:
+        devc_json = self.devcontainer_dir / ".devcontainer" / "devcontainer.json"
+        if devc_json.exists():
+            return devc_json
+        top_level = self.devcontainer_dir / "devcontainer.json"
+        if top_level.exists():
+            return top_level
+        raise FileNotFoundError(
+            f"no devcontainer.json found at {devc_json} or {top_level}; "
+            f"create one or use --sandbox docker instead."
+        )
+
+    def _workspace_folder(self) -> str:
+        """Best-effort container workspace path for cwd translation."""
+        try:
+            data = json.loads(self._devcontainer_json().read_text())
+        except (OSError, json.JSONDecodeError):
+            data = {}
+
+        configured = data.get("workspaceFolder")
+        if isinstance(configured, str) and configured.strip():
+            return (
+                configured
+                .replace("${localWorkspaceFolderBasename}", self.devcontainer_dir.name)
+                .replace("${localWorkspaceFolder}", str(self.devcontainer_dir))
+            )
+        return f"/workspaces/{self.devcontainer_dir.name}"
+
     def run(
         self,
         cmd: list[str],
@@ -37,15 +67,7 @@ class DevcontainerExecutor:
         timeout: int,
     ) -> subprocess.CompletedProcess[str]:
         # Verify devcontainer.json exists.
-        devc_json = self.devcontainer_dir / ".devcontainer" / "devcontainer.json"
-        if not devc_json.exists():
-            # Also check for top-level devcontainer.json (older convention).
-            top_level = self.devcontainer_dir / "devcontainer.json"
-            if not top_level.exists():
-                raise FileNotFoundError(
-                    f"no devcontainer.json found at {devc_json} or {top_level}; "
-                    f"create one or use --sandbox docker instead."
-                )
+        self._devcontainer_json()
 
         # Ensure the container is up (idempotent — devcontainer up is safe to re-run).
         if not self._up_done:
@@ -53,10 +75,16 @@ class DevcontainerExecutor:
                 self.cli_cmd, "up",
                 "--workspace-folder", str(self.devcontainer_dir),
             ]
-            subprocess.run(
+            up_result = subprocess.run(
                 up_args,
                 capture_output=True, text=True, timeout=timeout,
             )
+            if up_result.returncode != 0:
+                stderr_tail = (up_result.stderr or up_result.stdout or "")[-1500:]
+                raise RuntimeError(
+                    f"devcontainer up failed (exit {up_result.returncode}); "
+                    f"aborting before running command.\noutput tail:\n{stderr_tail}"
+                )
             self._up_done = True
 
         # Now exec the command.
@@ -64,10 +92,19 @@ class DevcontainerExecutor:
             self.cli_cmd, "exec",
             "--workspace-folder", str(self.devcontainer_dir),
         ]
-        for key, value in (env or {}).items():
+        runtime_env = (
+            dict(env) if env is not None
+            else build_forwarded_env(extra_env_var="BOB_DEVCONTAINER_FORWARD_ENV")
+        )
+        for key, value in runtime_env.items():
             exec_args.extend(["--remote-env", f"{key}={value}"])
-        # The devcontainer exec syntax: ... <command...>  (no -- separator needed).
-        exec_args.extend(cmd)
+        container_cwd = self.translate_path(cwd)
+        exec_args.extend([
+            "/bin/sh", "-lc",
+            'cd "$1" && shift && exec "$@"',
+            "sh", container_cwd,
+            *cmd,
+        ])
 
         return subprocess.run(
             exec_args,
@@ -80,7 +117,11 @@ class DevcontainerExecutor:
         devcontainer.json to mount .bob/ if needed (see docs)."""
 
     def translate_path(self, host_path: Path) -> str:
-        """Devcontainer mounts are user-configured; we don't know the mapping.
-        Return host path as-is — works when the devcontainer mounts the parent
-        project_root at the same absolute path."""
-        return str(host_path)
+        """Translate project-relative host paths to the devcontainer workspace."""
+        host_path = Path(host_path).resolve()
+        try:
+            rel = host_path.relative_to(self.devcontainer_dir.resolve())
+        except ValueError:
+            return str(host_path)
+        workspace = self._workspace_folder().rstrip("/")
+        return workspace if str(rel) == "." else f"{workspace}/{rel}"

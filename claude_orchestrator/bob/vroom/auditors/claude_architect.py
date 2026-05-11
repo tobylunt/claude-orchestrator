@@ -112,11 +112,7 @@ class ClaudeArchitectAuditor:
 
     def audit(self, workspace: Path, changed_files: list[Path]) -> list[Finding]:
         client = self._client or _ProductionAnthropicClient()
-        try:
-            text = client.audit_workspace(workspace, changed_files)
-        except Exception:
-            return []  # fail-safe: never let an auditor crash the pool
-
+        text = client.audit_workspace(workspace, changed_files)
         return _parse_findings(text)
 
 

@@ -242,6 +242,7 @@ def test_orchestrate_bob_run_vroom_spawns_subprocess(tmp_path: Path, monkeypatch
         **os.environ,
         "PATH": f"{fake_dir}{os.pathsep}{os.environ.get('PATH', '')}",
         "BOB_USE_STUB_ORCHESTRA": "1",
+        "BOB_USE_STUB_DUPLO": "1",
         "BOB_USE_STUB_VROOM": "1",  # avoid real API calls in vroom subprocess
     }
     result = sp.run(
