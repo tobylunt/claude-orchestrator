@@ -152,10 +152,10 @@ def test_docker_executor_passes_network_arg_when_configured(tmp_path: Path):
     assert args[idx + 1] == "bob-allowlist"
 
 
-def test_docker_executor_adds_default_allowlist_hosts(tmp_path: Path):
-    """When no custom network is provided but allowlist=True, Docker uses --add-host
-    entries for the default allowlist (Anthropic, OpenAI, GitHub, npm, PyPI).
-    """
+def test_docker_executor_emits_explicit_add_hosts(tmp_path: Path):
+    """Users can pin DNS resolution via add_hosts={hostname: ip}. The previous
+    'default allowlist' that wrote 0.0.0.0 for every host was removed (it made
+    the named hosts UNREACHABLE rather than allowlisted — opposite of intent)."""
     captured = []
     def capture(args, **kwargs):
         captured.append(args)
@@ -165,17 +165,16 @@ def test_docker_executor_adds_default_allowlist_hosts(tmp_path: Path):
     with patch("subprocess.run", side_effect=capture):
         executor = DockerExecutor(
             image="python:3.10-slim",
-            apply_default_allowlist=True,
+            add_hosts={"api.anthropic.com": "1.2.3.4", "api.openai.com": "5.6.7.8"},
         )
         executor.run(["echo", "hi"], cwd=tmp_path, env=None, timeout=30)
 
     args = captured[0]
-    args_str = " ".join(args)
-    # Default allowlist should include Anthropic and GitHub at minimum.
-    # We don't pin exact IPs (they change); we test the flag count is >= 2.
     add_host_count = sum(1 for a in args if a == "--add-host")
-    assert add_host_count >= 2, \
-        f"expected >=2 --add-host entries; got args: {args}"
+    assert add_host_count == 2
+    args_str = " ".join(args)
+    assert "api.anthropic.com:1.2.3.4" in args_str
+    assert "api.openai.com:5.6.7.8" in args_str
 
 
 def test_docker_executor_default_no_allowlist(tmp_path: Path):
@@ -192,3 +191,101 @@ def test_docker_executor_default_no_allowlist(tmp_path: Path):
 
     args = captured[0]
     assert "--add-host" not in args
+
+
+def test_docker_executor_forwards_host_env_when_env_is_none(tmp_path: Path, monkeypatch):
+    """env=None must NOT mean 'no env in container' — that would strip API keys.
+    Forward a whitelist from os.environ so the inner subprocess can authenticate."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-anthro")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-openai")
+    monkeypatch.setenv("BOB_CUSTOM", "custom-value")  # BOB_* prefix should propagate
+
+    captured = []
+    def capture(args, **kwargs):
+        captured.append(args)
+        from subprocess import CompletedProcess
+        return CompletedProcess(args, 0, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=capture):
+        DockerExecutor(image="python:3.10-slim").run(
+            ["echo", "hi"], cwd=tmp_path, env=None, timeout=30,
+        )
+
+    args = " ".join(captured[0])
+    assert "ANTHROPIC_API_KEY=sk-test-anthro" in args
+    assert "OPENAI_API_KEY=sk-test-openai" in args
+    assert "BOB_CUSTOM=custom-value" in args
+
+
+def test_docker_executor_explicit_env_overrides_forwarding(tmp_path: Path, monkeypatch):
+    """When the caller passes an explicit env dict, use that — don't merge."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "should-not-leak")
+
+    captured = []
+    def capture(args, **kwargs):
+        captured.append(args)
+        from subprocess import CompletedProcess
+        return CompletedProcess(args, 0, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=capture):
+        DockerExecutor(image="python:3.10-slim").run(
+            ["echo", "hi"], cwd=tmp_path,
+            env={"FOO": "bar"}, timeout=30,
+        )
+
+    args = " ".join(captured[0])
+    assert "FOO=bar" in args
+    assert "should-not-leak" not in args
+
+
+def test_docker_executor_add_volume_and_translate_path(tmp_path: Path):
+    """add_volume registers a mount; translate_path rewrites host paths into
+    container paths so the McLoop prompt can reference files the container
+    can actually see."""
+    bob_dir = tmp_path / ".bob"
+    bob_dir.mkdir()
+    executor = DockerExecutor(image="python:3.10-slim")
+    executor.add_volume(bob_dir, "/bob-state")
+
+    assert executor.translate_path(bob_dir / "spec.md") == "/bob-state/spec.md"
+    assert executor.translate_path(bob_dir / "features" / "001-x" / "activity.md") == "/bob-state/features/001-x/activity.md"
+    # Path outside the mount returns unchanged.
+    other = tmp_path / "elsewhere.txt"
+    assert executor.translate_path(other) == str(other.resolve())
+
+
+def test_docker_executor_mounts_registered_volumes(tmp_path: Path):
+    """add_volume mounts must show up as -v flags in `docker run`."""
+    bob_dir = tmp_path / ".bob"
+    bob_dir.mkdir()
+
+    captured = []
+    def capture(args, **kwargs):
+        captured.append(args)
+        from subprocess import CompletedProcess
+        return CompletedProcess(args, 0, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=capture):
+        executor = DockerExecutor(image="python:3.10-slim")
+        executor.add_volume(bob_dir, "/bob-state")
+        executor.run(["echo", "hi"], cwd=tmp_path, env={}, timeout=30)
+
+    args = " ".join(captured[0])
+    assert f"{bob_dir.resolve()}:/bob-state" in args
+
+
+def test_docker_executor_raises_on_build_failure(tmp_path: Path):
+    """A failed docker build must not silently fall back to the default image;
+    otherwise the runner uses a stripped image with no claude/codex CLI and
+    burns max_iterations producing nothing."""
+    dockerfile = tmp_path / "bob.dockerfile"
+    dockerfile.write_text("FROM nonexistent:bad\n")
+
+    def fail(args, **kwargs):
+        from subprocess import CompletedProcess
+        return CompletedProcess(args, 1, stdout="", stderr="manifest unknown")
+
+    with patch("subprocess.run", side_effect=fail):
+        executor = DockerExecutor(image="python:3.10-slim", dockerfile=dockerfile)
+        with pytest.raises(RuntimeError, match="docker build failed"):
+            executor.run(["echo", "hi"], cwd=tmp_path, env={}, timeout=30)

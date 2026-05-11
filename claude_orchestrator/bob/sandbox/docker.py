@@ -18,24 +18,30 @@ import subprocess
 from pathlib import Path
 
 
-# Hostname → IP for the default allowlist. These IPs may shift over time;
-# users can override by passing `add_hosts={...}` directly. The point of
-# this list is to demonstrate the mechanism in M5; real egress filtering
-# requires a user-configured Docker network (use `network` parameter).
-#
-# We use 0.0.0.0 placeholders to let Docker's default DNS handle resolution.
-# The `--add-host` mechanism in Docker is more for forcing specific resolutions
-# than for restriction; pair with `--network none` + custom proxy for true
-# egress filtering (M6).
-_DEFAULT_ALLOWLIST_HOSTS = [
-    "api.anthropic.com",
-    "api.openai.com",
-    "github.com",
-    "api.github.com",
-    "registry.npmjs.org",
-    "pypi.org",
-    "files.pythonhosted.org",
-]
+# Host env vars forwarded into the container when the caller passes env=None.
+# Without this whitelist, DockerExecutor.run(env=None) emits zero -e flags,
+# the inner claude/codex subprocess can't authenticate, and McLoop burns all
+# its iterations with no output. Callers can override by passing env=dict.
+_DEFAULT_FORWARD_ENV = (
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "HOME",
+    "PATH",
+    "OTEL_EXPORTER_OTLP_ENDPOINT",
+    "OTEL_SERVICE_NAME",
+)
+
+
+def _build_forwarded_env() -> dict[str, str]:
+    """Read whitelisted host env vars + any BOB_DOCKER_FORWARD_ENV additions."""
+    keys = list(_DEFAULT_FORWARD_ENV)
+    extra = os.environ.get("BOB_DOCKER_FORWARD_ENV", "")
+    if extra:
+        keys.extend(k.strip() for k in extra.split(",") if k.strip())
+    # Also forward anything starting with BOB_ (config), ANTHROPIC_, OPENAI_.
+    prefix_match = [k for k in os.environ if k.startswith(("BOB_", "ANTHROPIC_", "OPENAI_"))]
+    keys.extend(prefix_match)
+    return {k: os.environ[k] for k in set(keys) if k in os.environ}
 
 
 class DockerExecutor:
@@ -48,8 +54,8 @@ class DockerExecutor:
         extra_args: list[str] | None = None,
         network: str | None = None,
         dockerfile: Path | None = None,
-        apply_default_allowlist: bool = False,
         add_hosts: dict[str, str] | None = None,
+        user: str | None = None,
     ) -> None:
         self.image = image
         self.cpus = cpus
@@ -57,9 +63,38 @@ class DockerExecutor:
         self.extra_args = list(extra_args or [])
         self.network = network  # None = default (host-bridge); "none" = no network; "<name>" = custom
         self.dockerfile = dockerfile
-        self.apply_default_allowlist = apply_default_allowlist
         self.add_hosts = add_hosts or {}
+        # Match host UID:GID by default so files written inside the container
+        # are owned by the host user — fixes "non-root user can't write to
+        # mounted /workspace" when the example dockerfile uses USER bob.
+        self.user = user if user is not None else f"{os.getuid()}:{os.getgid()}"
         self._built_image: str | None = None
+        # Extra host paths to mount (host_path → container_path); set via
+        # add_volume() and consumed by run().
+        self._extra_volumes: dict[Path, str] = {}
+
+    def add_volume(self, host_path: Path, container_path: str) -> None:
+        """Register an additional bind-mount for subsequent run() calls.
+
+        Idempotent: re-registering the same host_path overwrites the previous
+        container_path mapping.
+        """
+        self._extra_volumes[Path(host_path).resolve()] = container_path
+
+    def translate_path(self, host_path: Path) -> str:
+        """Translate a host path to its in-container equivalent if mounted.
+
+        Returns the host path string if no matching mount is registered, so
+        callers can use the same code regardless of executor tier.
+        """
+        host_path = Path(host_path).resolve()
+        for host_root, container_root in self._extra_volumes.items():
+            try:
+                rel = host_path.relative_to(host_root)
+            except ValueError:
+                continue
+            return f"{container_root}/{rel}" if str(rel) != "." else container_root
+        return str(host_path)
 
     def run(
         self,
@@ -78,25 +113,30 @@ class DockerExecutor:
             "--workdir", "/workspace",
             f"--cpus={self.cpus}",
             f"--memory={self.memory}",
+            "--user", self.user,
         ]
+
+        # Extra bind-mounts registered via add_volume() (e.g., .bob/ for state)
+        for host_root, container_root in self._extra_volumes.items():
+            docker_args.extend(["--volume", f"{host_root}:{container_root}"])
 
         # Custom network
         if self.network is not None:
             docker_args.extend(["--network", self.network])
 
-        # Default allowlist (resolves via Docker's default DNS; for true egress
-        # filtering use a custom network).
-        if self.apply_default_allowlist:
-            for host in _DEFAULT_ALLOWLIST_HOSTS:
-                # 0.0.0.0 means "let DNS resolve"; the entry is mostly for documentation.
-                docker_args.extend(["--add-host", f"{host}:0.0.0.0"])
-
-        # Custom add-hosts (override / extend the default)
+        # Custom add-hosts for users who want to pin DNS resolution.
+        # NOTE: --add-host alone does NOT filter egress — it pins or overrides
+        # DNS. Setting 0.0.0.0 makes a hostname unreachable; setting an IP
+        # forces a specific destination. For real egress filtering, use a
+        # custom Docker network with an explicit proxy (BOB_DOCKER_NETWORK).
         for host, ip in self.add_hosts.items():
             docker_args.extend(["--add-host", f"{host}:{ip}"])
 
-        # Env vars
-        for key, value in (env or {}).items():
+        # Env vars: explicit dict if provided, otherwise forward a whitelist
+        # from the host. Without this, env=None means "no env in container"
+        # and the inner subprocess can't authenticate to Anthropic/OpenAI.
+        runtime_env = env if env is not None else _build_forwarded_env()
+        for key, value in runtime_env.items():
             docker_args.extend(["-e", f"{key}={value}"])
 
         docker_args.extend(self.extra_args)
@@ -137,8 +177,15 @@ class DockerExecutor:
             timeout=timeout,
         )
         if result.returncode != 0:
-            # Build failed; fall back to default image.
-            self._built_image = self.image
-        else:
-            self._built_image = tag
+            # Surface the build failure loudly. Silently falling back to the
+            # default image strips out everything the Dockerfile installed
+            # (Node, Claude CLI, project deps), so the inner claude -p call
+            # would fail with "command not found" and McLoop would burn all
+            # its iterations with no progress.
+            stderr_tail = (result.stderr or "")[-1500:]
+            raise RuntimeError(
+                f"docker build failed (exit {result.returncode}); aborting before "
+                f"running in a stripped-down fallback image.\nstderr tail:\n{stderr_tail}"
+            )
+        self._built_image = tag
         return self._built_image

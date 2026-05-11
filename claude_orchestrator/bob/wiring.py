@@ -104,7 +104,12 @@ def _build_executor(tier: str, project_root: Path | None = None):
         cpus = float(os.environ.get("BOB_DOCKER_CPUS", "4"))
         memory = os.environ.get("BOB_DOCKER_MEMORY", "8g")
         network = os.environ.get("BOB_DOCKER_NETWORK")  # None means default
-        apply_allowlist = os.environ.get("BOB_DOCKER_ALLOWLIST", "0") == "1"
+        # BOB_DOCKER_EXTRA_ARGS is a shell-style string (e.g. for extra -v mounts).
+        # Previously ignored — the dockerfile example documents using it to
+        # mount ~/.claude into the container, but _build_executor never read it.
+        extra_args_raw = os.environ.get("BOB_DOCKER_EXTRA_ARGS", "")
+        import shlex
+        extra_args = shlex.split(extra_args_raw) if extra_args_raw else []
 
         # Auto-detect bob.dockerfile in project root.
         dockerfile = None
@@ -117,7 +122,7 @@ def _build_executor(tier: str, project_root: Path | None = None):
             image=image, cpus=cpus, memory=memory,
             network=network,
             dockerfile=dockerfile,
-            apply_default_allowlist=apply_allowlist,
+            extra_args=extra_args,
         )
     if tier == "devcontainer":
         from claude_orchestrator.bob.sandbox.devcontainer import DevcontainerExecutor

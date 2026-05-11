@@ -73,3 +73,14 @@ class DevcontainerExecutor:
             exec_args,
             capture_output=True, text=True, timeout=timeout,
         )
+
+    def add_volume(self, host_path: Path, container_path: str) -> None:
+        """Devcontainers declare mounts in devcontainer.json statically; we
+        can't add them at runtime. Treat as a no-op and rely on the user's
+        devcontainer.json to mount .bob/ if needed (see docs)."""
+
+    def translate_path(self, host_path: Path) -> str:
+        """Devcontainer mounts are user-configured; we don't know the mapping.
+        Return host path as-is — works when the devcontainer mounts the parent
+        project_root at the same absolute path."""
+        return str(host_path)

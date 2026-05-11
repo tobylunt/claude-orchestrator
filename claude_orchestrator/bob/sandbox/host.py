@@ -27,3 +27,10 @@ class HostExecutor:
             text=True,
             timeout=timeout,
         )
+
+    def add_volume(self, host_path: Path, container_path: str) -> None:
+        """No-op for host executor — host paths are already the real paths."""
+
+    def translate_path(self, host_path: Path) -> str:
+        """Host paths are already real; return as-is."""
+        return str(host_path)

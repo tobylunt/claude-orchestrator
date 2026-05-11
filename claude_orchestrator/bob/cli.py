@@ -133,6 +133,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             "vroom",
             "--project", str(project_root),
             "--interval", "1800",
+            "--sandbox", sandbox_tier,
         ]
         # Pass through stub env vars so the child uses the same offline mode if any.
         child_env = os.environ.copy()
@@ -306,15 +307,23 @@ def _cmd_vroom_start(args: argparse.Namespace) -> int:
         )
     triage_gate = VroomTriageGate(yolo=yolo)
 
-    # The fix-loop spawns isolated McLoops on vroom/<id> branches.
+    # The fix-loop spawns isolated McLoops on vroom/<id> branches. The
+    # sandbox tier propagates from the parent `bob run` via --sandbox or
+    # BOB_SANDBOX_TIER so YOLO+docker doesn't silently fall back to host.
     from claude_orchestrator.bob.mcloop.runner import McLoopRunner
     from claude_orchestrator.bob.verifiers.python_pytest import PythonPytestVerifier
-    from claude_orchestrator.bob.sandbox.host import HostExecutor
+    from claude_orchestrator.bob.wiring import _build_executor
 
+    sandbox_tier = (
+        getattr(args, "sandbox", None)
+        or os.environ.get("BOB_SANDBOX_TIER")
+        or "host"
+    )
+    executor = _build_executor(sandbox_tier, project_root=project_root)
     runner = McLoopRunner(
         claude_cmd="claude",
         max_iterations=10,
-        executor=HostExecutor(),
+        executor=executor,
     )
     verifier = PythonPytestVerifier()
 
@@ -712,6 +721,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--watch-main-ref",
         action="store_true",
         help="trigger a cycle when .git/refs/heads/main changes (post-merge detection)",
+    )
+    vroom.add_argument(
+        "--sandbox",
+        choices=["host", "docker", "devcontainer"],
+        default=None,
+        help="sandbox tier for the fix-loop McLoop (default: $BOB_SANDBOX_TIER or host)",
     )
     vroom.set_defaults(func=_cmd_vroom_start)
 

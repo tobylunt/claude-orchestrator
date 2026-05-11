@@ -66,16 +66,28 @@ def _render_prompt(
     feature: Feature,
     master_spec: Path,
     feature_dir: Path,
+    executor=None,
 ) -> str:
+    """Render the iteration prompt. If `executor` is provided (Docker etc.),
+    file paths are translated through `executor.translate_path()` so they
+    point to mounted in-container paths instead of host paths the container
+    can't see.
+    """
     template = _read_prompt_template()
     success_block = "\n".join(
         f"- {c}" for c in feature.verification_plan.success_criteria
     ) or "- (no explicit criteria — see feature description)"
+
+    def _tr(p: Path) -> str:
+        if executor is not None and hasattr(executor, "translate_path"):
+            return executor.translate_path(p)
+        return str(p)
+
     return template.format(
-        master_spec_path=str(master_spec),
-        feature_spec_path=str(feature_dir / "spec.md"),
-        activity_path=str(feature_dir / "activity.md"),
-        failed_attempts_path=str(feature_dir / "failed_attempts.md"),
+        master_spec_path=_tr(master_spec),
+        feature_spec_path=_tr(feature_dir / "spec.md"),
+        activity_path=_tr(feature_dir / "activity.md"),
+        failed_attempts_path=_tr(feature_dir / "failed_attempts.md"),
         feature_id=feature.id,
         feature_name=feature.name,
         task_type=str(feature.task_type),
@@ -125,7 +137,15 @@ class McLoopRunner:
                 last_status=None,
             )
 
-        prompt = _render_prompt(feature, master_spec, feature_dir)
+        # Register .bob/ as an additional volume mount so the prompt's
+        # references to master_spec.md, activity.md, etc. resolve inside
+        # the container. master_spec lives at <project>/.bob/spec.md; its
+        # parent is the .bob/ dir. HostExecutor.add_volume is a no-op.
+        bob_dir = master_spec.parent.resolve()
+        if hasattr(self.executor, "add_volume"):
+            self.executor.add_volume(bob_dir, "/bob-state")
+
+        prompt = _render_prompt(feature, master_spec, feature_dir, executor=self.executor)
         verifier_log = feature_dir / "verifier-results.jsonl"
         consecutive_inconclusive = 0  # NEW
 
