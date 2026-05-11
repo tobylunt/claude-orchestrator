@@ -97,6 +97,36 @@ def _render_prompt(
     )
 
 
+def _autocommit_iteration(workspace: Path, *, iteration: int) -> None:
+    """Stage + commit any uncommitted worktree changes after a green
+    verifier result. No-op if the index is clean. Necessary under
+    `--sandbox docker` because the inner claude can't reach the host's
+    `.git` directory and so can't commit its own work.
+    """
+    try:
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=str(workspace), capture_output=True, text=True, timeout=30,
+        )
+        if status.returncode != 0 or not status.stdout.strip():
+            return  # nothing to commit
+        subprocess.run(
+            ["git", "add", "-A"],
+            cwd=str(workspace), capture_output=True, text=True, timeout=30,
+        )
+        subprocess.run(
+            ["git", "-c", "user.email=bob@local",
+             "-c", "user.name=Bob (autocommit)",
+             "commit", "-m", f"mcloop iter {iteration}: verifier green"],
+            cwd=str(workspace), capture_output=True, text=True, timeout=30,
+        )
+    except (subprocess.SubprocessError, OSError):
+        # Don't let an autocommit failure mask a successful iteration; the
+        # verifier already returned ok, so the work is real. Orchestra will
+        # see the empty diff and reject, surfacing the issue to the user.
+        pass
+
+
 class McLoopRunner:
     def __init__(
         self,
@@ -206,6 +236,17 @@ class McLoopRunner:
                     "reason": verify_result.reason[:1000],
                     "ts": datetime.now(UTC).isoformat(),
                 })
+
+                # If the verifier passed, auto-commit any uncommitted changes
+                # on the host. Under --sandbox docker the inner claude can't
+                # commit (the worktree's .git pointer references a host path
+                # not mounted in the container) — without this, Orchestra's
+                # diff capture comes back empty and the feature is rejected.
+                # Harmless under --sandbox host since claude would already
+                # have committed; `git commit` on an empty index is a no-op
+                # we explicitly check for.
+                if verify_result.status == "ok":
+                    _autocommit_iteration(workspace, iteration=i)
 
                 if verify_result.status == "inconclusive":
                     consecutive_inconclusive += 1

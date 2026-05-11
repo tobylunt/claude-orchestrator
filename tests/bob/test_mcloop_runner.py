@@ -308,9 +308,11 @@ def test_runner_passes_permission_bypass_flag(tmp_path: Path, monkeypatch):
         master_spec=master_spec, feature_dir=feature_dir, verifier=verifier,
     )
 
-    # Inspect the args passed to subprocess.run
-    assert len(captured_args) == 1
-    args = captured_args[0]
+    # Find the claude-call args (later calls are autocommit git ops which the
+    # patched subprocess.run mocks but are unrelated to this assertion).
+    claude_calls = [a for a in captured_args if a and a[0] == "claude"]
+    assert len(claude_calls) == 1
+    args = claude_calls[0]
     # Args should be a list like ['claude', '-p', PROMPT, '--permission-mode', 'bypassPermissions']
     assert "--permission-mode" in args, f"missing permission flag in: {args}"
     idx = args.index("--permission-mode")
@@ -596,3 +598,68 @@ def test_runner_default_mode_still_halts_on_first_inconclusive(tmp_path: Path):
     )
     assert result.outcome == "halted_inconclusive"
     assert result.iterations == 1  # halted on first
+
+
+def test_runner_autocommits_uncommitted_changes_after_green_verifier(tmp_path: Path):
+    """When verifier returns ok, McLoop auto-commits any uncommitted worktree
+    changes on the host. Necessary under --sandbox docker because the inner
+    claude can't reach the host .git, so its files end up as untracked. If
+    we didn't auto-commit, Orchestra's `git diff main..branch` would come
+    back empty and the feature would be rejected."""
+    import subprocess as sp
+
+    # Set up a real git repo + worktree on a feature branch.
+    project = tmp_path / "proj"
+    project.mkdir()
+    sp.run(["git", "init", "-b", "main", str(project)], check=True, capture_output=True)
+    (project / "README.md").write_text("hi\n")
+    sp.run(["git", "-C", str(project), "add", "."], check=True, capture_output=True)
+    sp.run(
+        ["git", "-C", str(project), "-c", "user.email=t@t.com",
+         "-c", "user.name=T", "commit", "-m", "init"],
+        check=True, capture_output=True,
+    )
+    workspace = project / "worktree"
+    sp.run(
+        ["git", "-C", str(project), "worktree", "add", str(workspace), "-b", "feature/x"],
+        check=True, capture_output=True,
+    )
+    # Simulate claude writing a new file but NOT committing (as happens in
+    # --sandbox docker).
+    (workspace / "new.py").write_text("def hi(): return 1\n")
+
+    # Stub claude + verifier.
+    fake_claude = tmp_path / "claude"
+    fake_claude.write_text("#!/bin/sh\necho '<promise>EXIT_SIGNAL</promise>'\n")
+    fake_claude.chmod(0o755)
+    feature_dir = tmp_path / ".bob" / "features" / "001-t"
+    feature_dir.mkdir(parents=True)
+    for f in ("spec.md", "activity.md", "failed_attempts.md", "verifier-results.jsonl"):
+        (feature_dir / f).write_text("")
+    master_spec = tmp_path / ".bob" / "spec.md"
+    master_spec.write_text("")
+
+    verifier = FakeVerifier([
+        VerifyResult(status="ok", reason="green", artifacts=[], coverage_notes=None),
+    ])
+    runner = McLoopRunner(
+        claude_cmd=str(fake_claude),
+        max_iterations=1,
+        per_iteration_timeout_s=10,
+    )
+    runner.run(
+        feature=_feature(), workspace=workspace,
+        master_spec=master_spec, feature_dir=feature_dir, verifier=verifier,
+    )
+
+    # After the run, new.py should be committed on feature/x.
+    log = sp.run(
+        ["git", "-C", str(workspace), "log", "--oneline"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert "mcloop iter 1: verifier green" in log, f"autocommit didn't fire; log: {log}"
+    diff = sp.run(
+        ["git", "-C", str(project), "diff", "--name-only", "main..feature/x"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert "new.py" in diff, f"expected new.py in diff main..feature/x; got: {diff!r}"
