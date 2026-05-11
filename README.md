@@ -139,9 +139,15 @@ Override any default model via environment variable. The defaults are listed in 
 | `BOB_MCLOOP_MODEL` | `claude-sonnet-4-6` |
 | `BOB_ORCHESTRA_CLAUDE_MODEL` | `claude-sonnet-4-6` |
 | `BOB_ORCHESTRA_CODEX_MODEL` | `gpt-5.4` |
+| `BOB_ORCHESTRA_CODEX_EFFORT` | `medium` |
 | `BOB_ORCHESTRA_JUDGE_MODEL` | `claude-opus-4-7` |
 | `BOB_VROOM_CLAUDE_MODEL` | `claude-sonnet-4-6` |
 | `BOB_VROOM_CODEX_MODEL` | `gpt-5.4` |
+| `BOB_VROOM_CODEX_EFFORT` | `low` |
+
+OpenAI effort values are `none`, `low`, `medium`, `high`, `xhigh`, or
+`default` (omit the API parameter and let the model choose). Use `gpt-5.5` +
+`xhigh` for deliberate deep-review runs rather than as the continuous default.
 
 ### Stub modes
 

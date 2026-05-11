@@ -11,6 +11,12 @@ import json
 import os
 from typing import Any
 
+from claude_orchestrator.bob.openai_config import (
+    OpenAIReasoningEffort,
+    openai_reasoning_kwargs,
+    resolve_openai_reasoning_effort,
+)
+
 
 class AnthropicDebateAgent:
     """A debate agent that calls Anthropic's API."""
@@ -55,10 +61,25 @@ class AnthropicDebateAgent:
 class OpenAIDebateAgent:
     """A debate agent that calls OpenAI's API."""
 
-    def __init__(self, *, model: str, system: str, role: str) -> None:
+    def __init__(
+        self,
+        *,
+        model: str,
+        system: str,
+        role: str,
+        reasoning_effort: OpenAIReasoningEffort | None = None,
+    ) -> None:
         self.model = model
         self.system = system
         self.role = role
+        self.reasoning_effort = (
+            reasoning_effort
+            if reasoning_effort is not None
+            else resolve_openai_reasoning_effort(
+                env_var="BOB_ORCHESTRA_CODEX_EFFORT",
+                default="medium",
+            )
+        )
 
     def run(self, prompt: str) -> list[dict[str, Any]]:
         try:
@@ -76,6 +97,10 @@ class OpenAIDebateAgent:
                 {"role": "system", "content": self.system},
                 {"role": "user", "content": prompt},
             ],
+            **openai_reasoning_kwargs(
+                model=self.model,
+                reasoning_effort=self.reasoning_effort,
+            ),
         )
 
         usage = getattr(response, "usage", None)
