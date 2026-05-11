@@ -35,6 +35,7 @@ from datetime import datetime
 from claude_orchestrator.bob.observability import span
 from claude_orchestrator.bob.sandbox.executor import SubprocessExecutor
 from claude_orchestrator.bob.sandbox.host import HostExecutor
+from claude_orchestrator.bob.signals import is_shutdown_requested
 from claude_orchestrator.bob.state_io import append_jsonl
 from claude_orchestrator.bob.verifiers.protocol import VerifyResult
 from claude_orchestrator.models import Feature
@@ -150,6 +151,17 @@ class McLoopRunner:
         consecutive_inconclusive = 0  # NEW
 
         for i in range(1, self.max_iterations + 1):
+            # Poll shutdown before each iteration so Ctrl-C is responsive.
+            # Without this, after the first SIGINT McLoop continues iterating
+            # (each `claude -p` ignores propagated SIGINT) until max_iterations
+            # — a frustrating "I pressed Ctrl-C but it kept spending money".
+            if is_shutdown_requested():
+                return McLoopResult(
+                    outcome="error",
+                    iterations=i - 1,
+                    last_reason="shutdown requested between iterations",
+                    last_status=None,
+                )
             with span("bob.mcloop.iter", attrs={
                 "feature_id": feature.id,
                 "iteration": i,

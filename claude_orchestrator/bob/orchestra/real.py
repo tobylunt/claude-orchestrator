@@ -102,13 +102,17 @@ class RealOrchestra:
 
         debate_log_dir.mkdir(parents=True, exist_ok=True)
         debate_log_path = debate_log_dir / "debate.json"
-        debate_log_path.write_text(json.dumps({
+        # Atomic write: tempfile + fsync + rename. A SIGKILL mid-write would
+        # leave debate.json half-formed, and `bob status` (or any future
+        # debate-log-feedback-into-McLoop wiring) would JSON-decode-error.
+        from claude_orchestrator.bob.state_io import write_json_atomic
+        write_json_atomic(debate_log_path, {
             "feature_id": feature.id,
             "rounds": rounds,
             "final_decision": latest_decision,
             "final_confidence": latest_confidence,
             "stability_history": self.detector.history,
-        }, indent=2))
+        })
 
         return Verdict(
             feature_id=feature.id,

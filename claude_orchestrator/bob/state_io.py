@@ -25,15 +25,25 @@ _PIPE_BUF_SAFE = 4096
 
 def write_json_atomic(path: Path, data: Any) -> None:
     """Write `data` to `path` atomically: tempfile in same dir, fsync, rename."""
-    path.parent.mkdir(parents=True, exist_ok=True)
     serialized = json.dumps(data, indent=2, default=str)
+    _write_text_atomic(path, serialized)
 
+
+def write_text_atomic(path: Path, text: str) -> None:
+    """Write text to path atomically (tempfile + fsync + rename). Useful for
+    non-JSON state like spec.md and PID files where a partial write left
+    behind by a crash would corrupt the consumer."""
+    _write_text_atomic(path, text)
+
+
+def _write_text_atomic(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     # Same directory ensures rename is atomic on POSIX (same filesystem).
     fd, tmp_str = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
     tmp = Path(tmp_str)
     try:
         with os.fdopen(fd, "w") as f:
-            f.write(serialized)
+            f.write(text)
             f.flush()
             os.fsync(f.fileno())
         tmp.replace(path)

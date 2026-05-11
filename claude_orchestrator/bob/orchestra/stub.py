@@ -40,13 +40,14 @@ class OrchestraStub:
 
         debate_log_path = debate_log_dir / "debate.json"
         debate_log_dir.mkdir(parents=True, exist_ok=True)
-        debate_log_path.write_text(json.dumps({
+        from claude_orchestrator.bob.state_io import write_json_atomic
+        write_json_atomic(debate_log_path, {
             "feature_id": feature.id,
             "decision": decision,
             "confidence": confidence,
             "reasoning": reasoning,
             "stub": True,
-        }, indent=2))
+        })
 
         return Verdict(
             feature_id=feature.id,

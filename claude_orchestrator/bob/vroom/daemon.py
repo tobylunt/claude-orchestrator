@@ -104,7 +104,10 @@ class VroomDaemon:
     def write_pid(self) -> None:
         self.bob_dir.mkdir(parents=True, exist_ok=True)
         pid_path = self.bob_dir / "vroom.pid"
-        pid_path.write_text(str(os.getpid()))
+        # Atomic write so `bob vroom stop` never reads a half-written PID
+        # during a race with daemon startup/shutdown.
+        from claude_orchestrator.bob.state_io import write_text_atomic
+        write_text_atomic(pid_path, str(os.getpid()))
 
     def remove_pid(self) -> None:
         pid_path = self.bob_dir / "vroom.pid"

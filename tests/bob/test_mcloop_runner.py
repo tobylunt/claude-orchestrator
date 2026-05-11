@@ -98,6 +98,43 @@ def test_runner_exits_when_promise_emitted_and_verifier_ok(
     assert result.iterations == 1
 
 
+def test_runner_polls_shutdown_between_iterations(tmp_path: Path, monkeypatch):
+    """After a SIGINT (shutdown requested), McLoop must NOT start another
+    iteration. Without this, claude -p subprocesses ignore propagated SIGINT
+    and the loop blithely keeps spending API budget until max_iterations."""
+    from claude_orchestrator.bob import signals as _signals
+    feature = _feature()
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    feature_dir = tmp_path / ".bob" / "features" / "001-t"
+    feature_dir.mkdir(parents=True)
+    for f in ("spec.md", "activity.md", "failed_attempts.md", "verifier-results.jsonl"):
+        (feature_dir / f).write_text("")
+    master_spec = tmp_path / ".bob" / "spec.md"
+    master_spec.write_text("")
+    fake_claude = tmp_path / "claude"
+    fake_claude.write_text("#!/bin/sh\necho ok\n")
+    fake_claude.chmod(0o755)
+
+    # Pre-arm the shutdown flag so the very first iteration check fires.
+    monkeypatch.setattr(_signals, "_shutdown_requested", True)
+
+    verifier = FakeVerifier(results=[])
+    runner = McLoopRunner(
+        claude_cmd=str(fake_claude),
+        max_iterations=10,
+        per_iteration_timeout_s=10,
+    )
+    result = runner.run(
+        feature=feature, workspace=workspace,
+        master_spec=master_spec, feature_dir=feature_dir, verifier=verifier,
+    )
+    assert result.outcome == "error"
+    assert result.iterations == 0
+    assert "shutdown" in result.last_reason.lower()
+    assert verifier.calls == 0
+
+
 def test_runner_halts_loud_when_preflight_fails(tmp_path: Path):
     """Verifier preflight failure (e.g., pytest not installed) must halt the
     loop BEFORE spending any iteration. Iterating against a broken verifier
