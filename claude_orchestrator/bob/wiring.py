@@ -7,11 +7,13 @@ without touching argparse code.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
 from claude_orchestrator.bob.coordinator import Coordinator
 from claude_orchestrator.bob.duplo.markdown_parser import parse_markdown_spec
+from claude_orchestrator.bob.state_io import append_jsonl
 from claude_orchestrator.bob.hitl.gates import GateRegistry, PostDuploGate
 from claude_orchestrator.bob.mcloop.runner import McLoopResult, McLoopRunner
 from claude_orchestrator.bob.orchestra.stub import OrchestraStub
@@ -171,11 +173,40 @@ def build_coordinator(
         else:
             # Single-file markdown path (M2a behavior preserved).
             spec = parse_markdown_spec(spec_path)
-        # TODO(P1): wire MetaRubricChecker (duplo/meta_rubric.py) here. Today
-        # this is unconditionally True, which defeats the YOLO PostDuploGate
-        # invariant "auto-approve = enabled + rubric_passed". The checker is
-        # implemented; only a production Judge (Anthropic client) is missing.
-        spec.rubric_meta_check_passed = True
+        # Meta-rubric coverage check (spec §6.6): ask an LLM judge whether the
+        # assigned verifier actually verifies each feature's success criteria.
+        # The YOLO PostDuploGate auto-approve requires this to be True; in
+        # default mode the user still sees the gate and can override.
+        from claude_orchestrator.bob.duplo.judge_anthropic import (
+            AnthropicJudge, StubJudge,
+        )
+        from claude_orchestrator.bob.duplo.meta_rubric import MetaRubricChecker
+
+        use_stub = os.environ.get("BOB_USE_STUB_DUPLO", "0") == "1"
+        judge = StubJudge() if use_stub else AnthropicJudge()
+        checker = MetaRubricChecker(judge)
+
+        judgments_path = (project_root / ".bob" / "rubric-judgments.jsonl")
+        judgments_path.parent.mkdir(parents=True, exist_ok=True)
+        all_adequate = True
+        for feature in spec.features:
+            j = checker.check(feature)
+            append_jsonl(judgments_path, {
+                "feature_id": feature.id,
+                "feature_name": feature.name,
+                "verifier_id": feature.verification_plan.verifier_id,
+                "adequate": j.adequate,
+                "missing": j.missing,
+                "reasoning": j.reasoning,
+            })
+            if not j.adequate:
+                all_adequate = False
+                print(
+                    f"warning: rubric coverage inadequate for feature "
+                    f"{feature.id} ({feature.name}): {j}",
+                    file=sys.stderr,
+                )
+        spec.rubric_meta_check_passed = all_adequate
         return spec
 
     def mcloop_callable(*, feature: Feature, workspace: Path,

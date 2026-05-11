@@ -50,6 +50,8 @@ def test_auto_approve_judge_returns_approve():
 def test_build_coordinator_returns_callable_coordinator(tmp_path: Path, monkeypatch):
     """Smoke test: build_coordinator returns a Coordinator that has duplo/mcloop/orchestra wired."""
     monkeypatch.setenv("BOB_USE_STUB_ORCHESTRA", "1")
+    # The meta-rubric check is part of Duplo and would otherwise hit Anthropic.
+    monkeypatch.setenv("BOB_USE_STUB_DUPLO", "1")
     sp.run(["git", "init", "-b", "main", str(tmp_path)], check=True)
     (tmp_path / "README.md").write_text("hi\n")
     sp.run(["git", "-C", str(tmp_path), "add", "."], check=True)
@@ -189,6 +191,7 @@ def test_build_coordinator_rejects_unknown_tier(tmp_path: Path, monkeypatch):
 def test_build_coordinator_uses_stub_when_env_set(tmp_path: Path, monkeypatch):
     """BOB_USE_STUB_ORCHESTRA=1 falls back to OrchestraStub (offline mode)."""
     monkeypatch.setenv("BOB_USE_STUB_ORCHESTRA", "1")
+    monkeypatch.setenv("BOB_USE_STUB_DUPLO", "1")
     sp.run(["git", "init", "-b", "main", str(tmp_path)], check=True)
     (tmp_path / "README.md").write_text("hi\n")
     sp.run(["git", "-C", str(tmp_path), "add", "."], check=True)
