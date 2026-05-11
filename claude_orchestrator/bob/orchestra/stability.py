@@ -1,18 +1,25 @@
 """Adaptive stability detection for multi-agent debate.
 
+Two termination paths:
+1. **Consensus tolerance (single-element distributions):** when each round
+   contributes a single confidence value (the common case), check if the
+   value stayed within ±tolerance of the previous round. N consecutive
+   in-tolerance rounds → STABLE.
+2. **KS-statistic (multi-element distributions):** when each round
+   contributes a vector (e.g., multiple-criteria confidence), use the
+   two-sample Kolmogorov-Smirnov test. KS < threshold for N consecutive
+   rounds → STABLE.
+
 Based on Hu et al., "Multi-Agent Debate for LLM Judges with Adaptive
-Stability Detection" (arXiv:2510.12697, 2025): a debate terminates when
-the judgment-distribution stays similar across N consecutive rounds, as
-measured by the Kolmogorov-Smirnov two-sample statistic.
+Stability Detection" (arXiv:2510.12697, 2025).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from scipy.stats import ks_2samp  # type: ignore[import-not-found]
-
 from claude_orchestrator.models import StrEnum
+from scipy.stats import ks_2samp  # type: ignore[import-not-found]
 
 
 class StabilityVerdict(StrEnum):
@@ -24,6 +31,7 @@ class StabilityVerdict(StrEnum):
 class StabilityDetector:
     ks_threshold: float = 0.05
     consecutive_rounds: int = 2
+    consensus_tolerance: float = 0.1
     history: list[list[float]] = field(default_factory=list)
     _consecutive: int = 0
 
@@ -38,10 +46,10 @@ class StabilityDetector:
             return StabilityVerdict.UNSTABLE
 
         prev = self.history[-1]
-        ks_stat, _p = ks_2samp(prev, distribution)
+        is_stable = self._is_stable_vs(prev, distribution)
         self.history.append(list(distribution))
 
-        if ks_stat < self.ks_threshold:
+        if is_stable:
             self._consecutive += 1
         else:
             self._consecutive = 0
@@ -49,3 +57,11 @@ class StabilityDetector:
         if self._consecutive >= self.consecutive_rounds:
             return StabilityVerdict.STABLE
         return StabilityVerdict.UNSTABLE
+
+    def _is_stable_vs(self, prev: list[float], current: list[float]) -> bool:
+        # Single-element on both sides: use tolerance check.
+        if len(prev) == 1 and len(current) == 1:
+            return abs(prev[0] - current[0]) <= self.consensus_tolerance
+        # Otherwise: KS statistic.
+        ks_stat, _p = ks_2samp(prev, current)
+        return ks_stat < self.ks_threshold
