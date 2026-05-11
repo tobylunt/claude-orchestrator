@@ -7,9 +7,16 @@ import pytest
 from claude_orchestrator.bob.wiring import (
     AutoApproveJudge,
     build_coordinator,
+    build_coordinator_from_run_config,
     build_verifier_registry,
+    build_vroom_audit_cycle,
+    build_vroom_daemon,
+    build_vroom_subprocess_invocation,
 )
+from claude_orchestrator.bob.run_config import RunConfig
+from claude_orchestrator.bob.vroom_config import VroomConfig
 from claude_orchestrator.bob.verifiers.python_pytest import PythonPytestVerifier
+from claude_orchestrator.bob.yolo import YoloConfig
 from claude_orchestrator.models import (
     Feature,
     FeatureStatus,
@@ -216,3 +223,122 @@ def test_build_coordinator_uses_stub_when_env_set(tmp_path: Path, monkeypatch):
     )
     # Just confirm build_coordinator doesn't crash with the stub.
     assert coord.duplo() is not None
+
+
+def test_build_coordinator_from_run_config_forwards_resolved_values(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """RunConfig is the handoff object from CLI to Coordinator wiring."""
+    import claude_orchestrator.bob.wiring as wiring
+
+    yolo = YoloConfig(enabled=True, sandbox_tier="docker", max_cost=9.0)
+    cfg = RunConfig(
+        project_root=tmp_path,
+        spec_path=tmp_path / "spec.md",
+        max_iterations=7,
+        max_cost=9.0,
+        sandbox_tier="docker",
+        yolo=yolo,
+        disabled_gates=frozenset({"post_duplo"}),
+        vroom=False,
+        otel_endpoint=None,
+    )
+    captured = {}
+    sentinel = object()
+
+    def fake_build_coordinator(**kwargs):
+        captured.update(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(wiring, "build_coordinator", fake_build_coordinator)
+
+    assert build_coordinator_from_run_config(cfg) is sentinel
+    assert captured["project_root"] == tmp_path
+    assert captured["spec_path"] == tmp_path / "spec.md"
+    assert captured["max_iterations"] == 7
+    assert captured["disabled_gates"] == {"post_duplo"}
+    assert captured["sandbox_tier"] == "docker"
+    assert captured["yolo"] is yolo
+
+
+def test_build_vroom_subprocess_invocation_forwards_yolo_and_otel(tmp_path: Path):
+    yolo = YoloConfig(
+        enabled=True,
+        sandbox_tier="docker",
+        max_cost=12.5,
+        max_inconclusive=7,
+        vroom_severity="critical",
+    )
+    cfg = RunConfig(
+        project_root=tmp_path,
+        spec_path=tmp_path / "spec.md",
+        max_iterations=1,
+        max_cost=12.5,
+        sandbox_tier="docker",
+        yolo=yolo,
+        disabled_gates=frozenset(),
+        vroom=True,
+        otel_endpoint="http://localhost:6006/v1/traces",
+    )
+
+    cmd, env = build_vroom_subprocess_invocation(
+        cfg,
+        base_env={"BOB_USE_STUB_VROOM": "1"},
+        python_executable="/usr/bin/python-test",
+    )
+
+    assert cmd == [
+        "/usr/bin/python-test",
+        "-m",
+        "claude_orchestrator.bob.cli",
+        "vroom",
+        "--project",
+        str(tmp_path),
+        "--interval",
+        "1800",
+        "--sandbox",
+        "docker",
+    ]
+    assert env["BOB_USE_STUB_VROOM"] == "1"
+    assert env["BOB_VROOM_YOLO_ENABLED"] == "1"
+    assert env["BOB_VROOM_YOLO_SEVERITY"] == "critical"
+    assert env["BOB_VROOM_YOLO_MAX_COST"] == "12.5"
+    assert env["BOB_YOLO_MAX_INCONCLUSIVE"] == "7"
+    assert env["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://localhost:6006/v1/traces"
+
+
+def test_build_vroom_audit_cycle_uses_configured_stub_pool(tmp_path: Path):
+    cfg = VroomConfig(
+        project_root=tmp_path,
+        sandbox_tier="host",
+        use_stub=True,
+        yolo=None,
+    )
+
+    cycle = build_vroom_audit_cycle(cfg, include_fix_driver=False)
+
+    assert cycle.project_root == tmp_path
+    assert cycle.fix_driver is None
+    assert [auditor.id for auditor in cycle.auditor_pool.auditors] == [
+        "semgrep",
+        "claude_architect",
+        "codex_security",
+    ]
+
+
+def test_build_vroom_daemon_forwards_interval_and_watch_flag(tmp_path: Path):
+    cfg = VroomConfig(
+        project_root=tmp_path,
+        sandbox_tier="host",
+        use_stub=True,
+        yolo=None,
+        timer_interval_s=42,
+        watch_main_ref=True,
+    )
+
+    daemon = build_vroom_daemon(cfg)
+
+    assert daemon.project_root == tmp_path
+    assert daemon.timer_interval_s == 42
+    assert daemon.watch_main_ref is True
