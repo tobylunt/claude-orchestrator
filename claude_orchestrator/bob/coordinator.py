@@ -11,6 +11,7 @@ coordinator.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
@@ -98,25 +99,51 @@ class Coordinator:
         self.verbose = verbose
 
     def run(self, scope: RunScope) -> None:
-        run_id = str(uuid.uuid4())
-        with span("bob.run", attrs={"run_id": run_id}):
-            self._run_inner(scope, run_id)
+        # On resume, reuse the previous run_id from cursor.json so cost rows
+        # and run-log events stay grouped under the same logical run.
+        # `bob runs` / `bob costs --by run` would otherwise show the same work
+        # split across multiple uuids each time the user retried after a crash.
+        run_id, is_resume = self._resume_or_new_run_id()
+        with span("bob.run", attrs={"run_id": run_id, "resumed": is_resume}):
+            self._run_inner(scope, run_id, is_resume=is_resume)
 
-    def _run_inner(self, scope: RunScope, run_id: str) -> None:
+    def _resume_or_new_run_id(self) -> tuple[str, bool]:
+        cursor_path = self.bob_dir / "cursor.json"
+        if cursor_path.exists():
+            try:
+                cur = json.loads(cursor_path.read_text())
+                phase = cur.get("current_phase")
+                prior = cur.get("run_id")
+                if isinstance(prior, str) and prior and phase not in (None, "idle"):
+                    return prior, True
+            except (OSError, json.JSONDecodeError):
+                pass
+        return str(uuid.uuid4()), False
+
+    def _run_inner(self, scope: RunScope, run_id: str, *, is_resume: bool = False) -> None:
         from claude_orchestrator.bob.cost_tracker import set_run_context
         set_run_context(run_id=run_id, bob_dir=self.bob_dir)
         # Stash run_id on self so _log_event auto-injects it into every event.
         self._current_run_id = run_id
 
         self._set_cursor("starting", None, run_id)
-        started_details: dict = {"run_id": run_id}
+        started_details: dict = {"run_id": run_id, "resumed": is_resume}
         otel_endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
         if otel_endpoint:
             started_details["otel_endpoint"] = otel_endpoint
         self._log_event("run_started", started_details)
 
         # ---- Duplo phase ----
-        if scope.includes_duplo:
+        # On resume, the spec was already materialized in the prior partial
+        # run; re-running Duplo would re-elicit the spec (non-deterministic on
+        # the multimodal path) and burn API budget. Skip if the master spec
+        # exists and features have already been laid out.
+        should_run_duplo = scope.includes_duplo and not (
+            is_resume
+            and (self.bob_dir / "spec.md").exists()
+            and (self.bob_dir / "features").exists()
+        )
+        if should_run_duplo:
             self._set_cursor("duplo", None, run_id)
             spec = self.duplo()
             self._materialize_spec(spec)
@@ -203,6 +230,24 @@ class Coordinator:
                 "task_type": str(feature.task_type),
             }):
                 self._run_feature_inner(feature, feature_dir, run_id)
+        except Exception as e:
+            # Catch-all: unexpected exceptions (network errors, validation
+            # failures, etc.) would otherwise leave the feature stuck
+            # IN_PROGRESS with no `feature_failed` event in the run log.
+            # Persist FAILED state and a diagnostic so resume + `bob runs`
+            # show the failure honestly.
+            try:
+                feature.status = FeatureStatus.FAILED
+                feature.last_error = f"{type(e).__name__}: {e}"
+                feature.updated_at = datetime.now(UTC)
+                self._save_feature(feature, feature_dir)
+            except Exception:
+                pass  # don't let cleanup crash mask the real exception
+            self._log_event("feature_failed", {
+                "feature_id": feature.id,
+                "reason": f"{type(e).__name__}: {e}",
+            })
+            raise
         finally:
             set_feature_context(None)
 
@@ -223,7 +268,12 @@ class Coordinator:
             # Create worktree if not already present. Both path and branch are
             # handled idempotently by add_worktree (M2b), so retries after
             # crash recovery work even if the branch was created in a prior run.
-            if not worktree.exists():
+            # A bare directory at the worktree path is not the same as a real
+            # worktree — git always writes a `.git` file/dir on success. If the
+            # prior run crashed between `mkdir` and `git worktree add`, the
+            # path exists but is unusable; re-add to recover.
+            worktree_is_complete = (worktree / ".git").exists()
+            if not worktree_is_complete:
                 try:
                     add_worktree(self.project_root, worktree, branch=branch_name)
                     self._log_event("worktree_created", {"feature_id": feature.id, "path": str(worktree)})
@@ -413,12 +463,22 @@ class Coordinator:
             return "-> Bob run finished"
         return None  # unknown / not surfaced
 
+    _EVENT_FIELD_LIMIT = 1500  # bytes per string field
+
     def _log_event(self, event: str, details: dict) -> None:
         # Auto-inject run_id from the current run if not already in details.
         # Lets `bob runs` group every event by its parent run.
         full_details = dict(details)
         if "run_id" not in full_details and getattr(self, "_current_run_id", None):
             full_details["run_id"] = self._current_run_id
+        # Defensively truncate long string fields. A McLoop verifier reason
+        # (pytest traceback) can easily exceed the 4096-byte atomic-append
+        # safe limit; without this guard append_jsonl raises ValueError mid-
+        # feature, the unhandled exception bubbles out of _run_feature_inner,
+        # and the feature is left stuck IN_PROGRESS with no error logged.
+        for k, v in list(full_details.items()):
+            if isinstance(v, str) and len(v) > self._EVENT_FIELD_LIMIT:
+                full_details[k] = v[:self._EVENT_FIELD_LIMIT] + "… [truncated]"
         append_jsonl(self.bob_dir / "run-log.jsonl", {
             "ts": datetime.now(UTC).isoformat(),
             "event": event,
