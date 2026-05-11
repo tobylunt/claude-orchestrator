@@ -9,8 +9,31 @@ from claude_orchestrator.bob.vroom.coalescer import FindingCluster
 from claude_orchestrator.bob.vroom.fix_loop import (
     FixOutcome,
     FixLoopDriver,
+    render_finding_spec,
 )
 from claude_orchestrator.models import Finding, SARIFLocation
+
+
+def test_render_finding_spec_includes_finding_details():
+    """Spec must contain rule, severity, location, and message — McLoop reads
+    this verbatim, and an empty spec leaves the agent blind."""
+    f = Finding(
+        rule_id="codex.sql-injection",
+        severity="high",
+        location=SARIFLocation(uri="app.py", start_line=15, end_line=15),
+        message="User-controlled query parameter interpolated into SQL.",
+        proposed_fix=None,
+        auditor="codex_security",
+        fingerprint="abc",
+        status="open",
+    )
+    spec = render_finding_spec(f, auditors=["claude_architect", "codex_security"])
+    assert "codex.sql-injection" in spec
+    assert "high" in spec
+    assert "app.py:15" in spec
+    assert "User-controlled query parameter" in spec
+    assert "claude_architect, codex_security" in spec
+    assert "pytest suite passes" in spec  # success criteria injection
 
 
 def _cluster_with_finding(rule="r", line=1, severity="high"):

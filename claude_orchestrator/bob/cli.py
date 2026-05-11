@@ -323,9 +323,11 @@ def _cmd_vroom_start(args: argparse.Namespace) -> int:
             ),
             status=FeatureStatus.PENDING,
         )
+        from claude_orchestrator.bob.vroom.fix_loop import render_finding_spec
         vroom_feature_dir = project_root / ".bob" / "vroom-features" / branch_name.replace("/", "-")
         vroom_feature_dir.mkdir(parents=True, exist_ok=True)
-        for f in ("spec.md", "activity.md", "failed_attempts.md", "verifier-results.jsonl"):
+        (vroom_feature_dir / "spec.md").write_text(render_finding_spec(finding))
+        for f in ("activity.md", "failed_attempts.md", "verifier-results.jsonl"):
             (vroom_feature_dir / f).write_text("")
         master_spec = project_root / ".bob" / "spec.md"
         if not master_spec.exists():
