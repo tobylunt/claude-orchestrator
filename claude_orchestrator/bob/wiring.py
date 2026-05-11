@@ -203,14 +203,29 @@ def build_coordinator(
                 "adequate": j.adequate,
                 "missing": j.missing,
                 "reasoning": j.reasoning,
+                "malformed": j.malformed,
+                # Keep the raw judge response on disk so an unexplained
+                # 'inadequate' verdict is debuggable post-hoc.
+                "raw_response": (j.raw_response or "")[:2000],
             })
             if not j.adequate:
                 all_adequate = False
-                print(
-                    f"warning: rubric coverage inadequate for feature "
-                    f"{feature.id} ({feature.name}): {j}",
-                    file=sys.stderr,
-                )
+                if j.malformed:
+                    print(
+                        f"warning: MALFORMED rubric verdict for feature "
+                        f"{feature.id} ({feature.name}) — judge said "
+                        f"'inadequate' with no missing-criteria or reasoning. "
+                        f"This is treated as a block, but the explanation is "
+                        f"absent; inspect .bob/rubric-judgments.jsonl "
+                        f"'raw_response' before approving manually.",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        f"warning: rubric coverage inadequate for feature "
+                        f"{feature.id} ({feature.name}): {j}",
+                        file=sys.stderr,
+                    )
         spec.rubric_meta_check_passed = all_adequate
         return spec
 

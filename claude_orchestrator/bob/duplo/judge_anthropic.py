@@ -56,7 +56,13 @@ class AnthropicJudge:
             )
 
         text = "".join(b.text for b in response.content if hasattr(b, "text"))
-        return _parse_judgment_json(text)
+        parsed = _parse_judgment_json(text)
+        # Stash the raw model output so the wiring layer can persist it to
+        # rubric-judgments.jsonl. Without this, an inadequate-without-detail
+        # verdict is unactionable post-hoc — we throw away the evidence we'd
+        # need to know whether the model misbehaved or actually had a point.
+        parsed.setdefault("_raw", text)
+        return parsed
 
 
 class StubJudge:
@@ -67,6 +73,7 @@ class StubJudge:
             "verdict": "adequate",
             "missing": [],
             "reasoning": "stub judge — adequate by default",
+            "_raw": '{"stub": true}',
         }
 
 

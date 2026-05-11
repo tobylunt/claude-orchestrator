@@ -50,3 +50,62 @@ def test_parse_judgment_unparseable_falls_back_to_inadequate():
     out = _parse_judgment_json("sorry, I cannot answer that")
     assert out["verdict"] == "inadequate"
     assert "not parseable" in out["missing"][0]
+
+
+class _FixedJudge:
+    """Test judge that returns whatever dict you hand it."""
+    def __init__(self, reply: dict): self._reply = reply
+    def judge(self, payload): return dict(self._reply)
+
+
+def test_judgment_malformed_flag_set_when_inadequate_has_no_explanation():
+    """The real dogfood produced this exact shape:
+    {"verdict": "inadequate"} with no missing or reasoning — yields an
+    inadequate verdict the user can't act on. Flag it so the wiring layer
+    can print a louder warning + the raw response."""
+    j = MetaRubricChecker(_FixedJudge({
+        "verdict": "inadequate",
+        "_raw": '{"verdict":"inadequate"}',
+    })).check(_feature())
+    assert j.adequate is False
+    assert j.malformed is True
+    assert j.raw_response == '{"verdict":"inadequate"}'
+    assert "malformed" in str(j).lower()
+
+
+def test_judgment_malformed_false_when_inadequate_has_reasoning():
+    """A normal inadequate verdict with at least some explanation is NOT
+    malformed — the user can act on it."""
+    j = MetaRubricChecker(_FixedJudge({
+        "verdict": "inadequate",
+        "missing": ["criterion X"],
+        "reasoning": "verifier does not exercise X",
+        "_raw": "{...}",
+    })).check(_feature())
+    assert j.adequate is False
+    assert j.malformed is False
+
+
+def test_judgment_malformed_false_when_adequate():
+    """An adequate verdict is never malformed, even with empty reasoning."""
+    j = MetaRubricChecker(_FixedJudge({
+        "verdict": "adequate",
+        "missing": [],
+        "reasoning": "",
+        "_raw": "{...}",
+    })).check(_feature())
+    assert j.adequate is True
+    assert j.malformed is False
+
+
+def test_judgment_carries_raw_response_through():
+    """Raw response must thread from judge.judge() into CoverageJudgment
+    so the wiring layer can persist it to rubric-judgments.jsonl."""
+    raw = "the model said something weird here"
+    j = MetaRubricChecker(_FixedJudge({
+        "verdict": "adequate",
+        "missing": [],
+        "reasoning": "good",
+        "_raw": raw,
+    })).check(_feature())
+    assert j.raw_response == raw
