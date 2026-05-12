@@ -1,4 +1,5 @@
 """Tests for the production AutoGen-backed Orchestra (M2)."""
+import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -6,6 +7,7 @@ import pytest
 
 from claude_orchestrator.bob.orchestra.real import RealOrchestra
 from claude_orchestrator.bob.orchestra.stability import StabilityVerdict
+from claude_orchestrator.bob.review_policy import ReviewPolicy
 from claude_orchestrator.models import (
     Feature,
     FeatureStatus,
@@ -82,3 +84,87 @@ def test_real_orchestra_abstain_on_max_rounds(tmp_path: Path):
         debate_log_dir=tmp_path,
     )
     assert verdict.decision == "abstain"
+
+
+def test_real_orchestra_skips_premium_review_for_low_risk_high_confidence(
+    tmp_path: Path,
+):
+    claude = MagicMock()
+    claude.run = MagicMock(return_value=[{"content": "ok", "decision": "approve"}])
+    codex = MagicMock()
+    codex.run = MagicMock(return_value=[{"content": "ok", "decision": "approve"}])
+    judge = MagicMock()
+    judge.run = MagicMock(
+        return_value=[{"content": "approve", "decision": "approve", "confidence": 0.95}]
+    )
+    premium_judge = MagicMock()
+    premium_codex = MagicMock()
+
+    orchestra = RealOrchestra(
+        claude_agent=claude,
+        codex_agent=codex,
+        judge_agent=judge,
+        premium_judge_agent=premium_judge,
+        premium_codex_agent=premium_codex,
+        review_policy=ReviewPolicy(risk_fragments=()),
+        max_rounds=1,
+    )
+
+    verdict = orchestra.review(
+        feature=_feature(),
+        diff="diff --git a/docs.md b/docs.md\n+++ b/docs.md\n",
+        debate_log_dir=tmp_path,
+    )
+
+    assert verdict.decision == "approve"
+    premium_judge.run.assert_not_called()
+    premium_codex.run.assert_not_called()
+    log = json.loads(verdict.debate_log_path.read_text())
+    assert log["premium_escalation"]["requested"] is False
+
+
+def test_real_orchestra_applies_premium_review_when_policy_triggers(
+    tmp_path: Path,
+):
+    claude = MagicMock()
+    claude.run = MagicMock(return_value=[{"content": "ok", "decision": "approve"}])
+    codex = MagicMock()
+    codex.run = MagicMock(return_value=[{"content": "risk", "decision": "reject"}])
+    judge = MagicMock()
+    judge.run = MagicMock(
+        return_value=[{"content": "uncertain", "decision": "approve", "confidence": 0.5}]
+    )
+    premium_codex = MagicMock()
+    premium_codex.run = MagicMock(
+        return_value=[{"content": "deep risk", "decision": "reject"}]
+    )
+    premium_judge = MagicMock()
+    premium_judge.run = MagicMock(
+        return_value=[
+            {"content": "premium reject", "decision": "reject", "confidence": 0.98}
+        ]
+    )
+
+    orchestra = RealOrchestra(
+        claude_agent=claude,
+        codex_agent=codex,
+        judge_agent=judge,
+        premium_judge_agent=premium_judge,
+        premium_codex_agent=premium_codex,
+        review_policy=ReviewPolicy(min_confidence=0.85, risk_fragments=()),
+        max_rounds=1,
+    )
+
+    verdict = orchestra.review(
+        feature=_feature(),
+        diff="diff --git a/src/x.py b/src/x.py\n+++ b/src/x.py\n",
+        debate_log_dir=tmp_path,
+    )
+
+    assert verdict.decision == "reject"
+    assert verdict.confidence == 0.98
+    premium_codex.run.assert_called_once()
+    premium_judge.run.assert_called_once()
+    log = json.loads(verdict.debate_log_path.read_text())
+    assert log["premium_escalation"]["applied"] is True
+    assert "confidence<0.85" in log["premium_escalation"]["reasons"]
