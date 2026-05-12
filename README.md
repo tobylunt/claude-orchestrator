@@ -106,7 +106,7 @@ Related: `bob run --inputs`, `bob validate`.
 
 ### Orchestra
 
-**Adversarial code review.** After McLoop produces a passing diff, Orchestra runs a 3-agent debate: Claude defends the implementation, GPT-5.4 Codex attacks it, and Claude Opus acts as judge. Debate terminates when the judge's verdict reaches KS-stability (consecutive rounds agree). The full debate transcript is saved to `.bob/features/<NNN>/debate.json`. Set `BOB_USE_STUB_ORCHESTRA=1` to skip the debate and auto-approve.
+**Adversarial code review.** After McLoop produces a passing diff, Orchestra runs a 3-agent debate: Claude defends the implementation, GPT-5.4 Codex attacks it, and a fast Claude judge synthesizes. Debate terminates when the judge's verdict reaches KS-stability (consecutive rounds agree). A premium pass (GPT-5.5 deep review plus Claude Opus final judge) runs only when the review policy flags risk, low confidence, disagreement, or large diffs. The full debate transcript is saved to `.bob/features/<NNN>/debate.json`. Set `BOB_USE_STUB_ORCHESTRA=1` to skip the debate and auto-approve.
 
 ### Vroom
 
@@ -140,6 +140,10 @@ Override any default model via environment variable. The defaults are listed in 
 | `BOB_ORCHESTRA_CLAUDE_MODEL` | `claude-sonnet-4-6` |
 | `BOB_ORCHESTRA_CODEX_MODEL` | `gpt-5.4` |
 | `BOB_ORCHESTRA_CODEX_EFFORT` | `medium` |
+| `BOB_ORCHESTRA_FAST_JUDGE_MODEL` | `claude-sonnet-4-6` |
+| `BOB_ORCHESTRA_PREMIUM_POLICY` | `adaptive` |
+| `BOB_ORCHESTRA_PREMIUM_CODEX_MODEL` | `gpt-5.5` |
+| `BOB_ORCHESTRA_PREMIUM_CODEX_EFFORT` | `xhigh` |
 | `BOB_ORCHESTRA_JUDGE_MODEL` | `claude-opus-4-7` |
 | `BOB_VROOM_CLAUDE_MODEL` | `claude-sonnet-4-6` |
 | `BOB_VROOM_CODEX_MODEL` | `gpt-5.4` |
@@ -148,6 +152,7 @@ Override any default model via environment variable. The defaults are listed in 
 OpenAI effort values are `none`, `low`, `medium`, `high`, `xhigh`, or
 `default` (omit the API parameter and let the model choose). Use `gpt-5.5` +
 `xhigh` for deliberate deep-review runs rather than as the continuous default.
+Premium policy values are `adaptive`, `always`, or `never`.
 
 ### Stub modes
 

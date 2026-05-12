@@ -23,6 +23,8 @@ m2 = [
     "pandera>=0.20",
     "hypothesis>=6.100",
     "papermill>=2.6",
+    "nbformat>=5.10.4",
+    "nbclient>=0.10.0",
     "shapely>=2.0",
     "pyproj>=3.6",
     "fiona>=1.10",
@@ -31,7 +33,6 @@ m2 = [
     "opentelemetry-api>=1.20",
     "opentelemetry-sdk>=1.20",
     "opentelemetry-exporter-otlp>=1.20",
-    "arize-phoenix>=4.0",  # recommended local backend, opt-in
 ]
 
 [project.scripts]

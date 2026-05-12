@@ -56,6 +56,10 @@ def _build_orchestra():
         AnthropicDebateAgent,
         OpenAIDebateAgent,
     )
+    from claude_orchestrator.bob.openai_config import (
+        resolve_openai_reasoning_effort,
+    )
+    from claude_orchestrator.bob.review_policy import ReviewPolicy
 
     claude_agent = AnthropicDebateAgent(
         model=os.environ.get("BOB_ORCHESTRA_CLAUDE_MODEL", "claude-sonnet-4-6"),
@@ -67,15 +71,32 @@ def _build_orchestra():
         system='You are an adversarial reviewer. Find bugs, edge cases, security issues. Reply JSON: {"content": "...", "decision": "approve|reject|abstain"}',
         role="codex",
     )
-    judge_agent = AnthropicDebateAgent(
-        model=os.environ.get("BOB_ORCHESTRA_JUDGE_MODEL", "claude-opus-4-7"),
+    fast_judge_agent = AnthropicDebateAgent(
+        model=os.environ.get("BOB_ORCHESTRA_FAST_JUDGE_MODEL", "claude-sonnet-4-6"),
         system='You synthesize the debate. Reply JSON: {"content": "...", "decision": "approve|reject|abstain", "confidence": 0.0..1.0}',
         role="judge",
+    )
+    premium_codex_agent = OpenAIDebateAgent(
+        model=os.environ.get("BOB_ORCHESTRA_PREMIUM_CODEX_MODEL", "gpt-5.5"),
+        system='You are a premium adversarial reviewer. Find subtle bugs, security issues, architectural risk, and hidden edge cases. Reply JSON: {"content": "...", "decision": "approve|reject|abstain"}',
+        role="premium_codex",
+        reasoning_effort=resolve_openai_reasoning_effort(
+            env_var="BOB_ORCHESTRA_PREMIUM_CODEX_EFFORT",
+            default="xhigh",
+        ),
+    )
+    premium_judge_agent = AnthropicDebateAgent(
+        model=os.environ.get("BOB_ORCHESTRA_JUDGE_MODEL", "claude-opus-4-7"),
+        system='You are the premium final judge. Synthesize baseline and premium reviews. Reply JSON: {"content": "...", "decision": "approve|reject|abstain", "confidence": 0.0..1.0}',
+        role="premium_judge",
     )
     return RealOrchestra(
         claude_agent=claude_agent,
         codex_agent=codex_agent,
-        judge_agent=judge_agent,
+        judge_agent=fast_judge_agent,
+        premium_codex_agent=premium_codex_agent,
+        premium_judge_agent=premium_judge_agent,
+        review_policy=ReviewPolicy.from_env(),
         max_rounds=int(os.environ.get("BOB_ORCHESTRA_MAX_ROUNDS", "5")),
     )
 

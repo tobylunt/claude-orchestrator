@@ -11,6 +11,7 @@ from claude_orchestrator.bob.orchestra.stability import (
     StabilityDetector,
     StabilityVerdict,
 )
+from claude_orchestrator.bob.review_policy import ReviewPolicy
 from claude_orchestrator.models import Feature, Verdict
 
 
@@ -25,6 +26,9 @@ class RealOrchestra:
         claude_agent: DebateAgent,
         codex_agent: DebateAgent,
         judge_agent: DebateAgent,
+        premium_judge_agent: DebateAgent | None = None,
+        premium_codex_agent: DebateAgent | None = None,
+        review_policy: ReviewPolicy | None = None,
         max_rounds: int = 5,
         ks_threshold: float = 0.05,
         consecutive_rounds: int = 2,
@@ -32,6 +36,9 @@ class RealOrchestra:
         self.claude = claude_agent
         self.codex = codex_agent
         self.judge = judge_agent
+        self.premium_judge = premium_judge_agent
+        self.premium_codex = premium_codex_agent
+        self.review_policy = review_policy or ReviewPolicy()
         self.max_rounds = max_rounds
         self.detector = StabilityDetector(
             ks_threshold=ks_threshold,
@@ -82,8 +89,11 @@ class RealOrchestra:
                 rounds.append({
                     "round": round_num,
                     "claude": claude_msgs[-1]["content"],
+                    "claude_decision": claude_msgs[-1].get("decision", "abstain"),
                     "codex": codex_msgs[-1]["content"],
+                    "codex_decision": codex_msgs[-1].get("decision", "abstain"),
                     "judge": judge_final["content"],
+                    "judge_decision": decision,
                     "decision": decision,
                     "confidence": confidence,
                 })
@@ -100,6 +110,19 @@ class RealOrchestra:
         if latest_decision not in ("approve", "reject"):
             latest_decision = "abstain"
 
+        premium_escalation = self._maybe_run_premium_review(
+            feature=feature,
+            diff=diff,
+            prompt_base=prompt_base,
+            rounds=rounds,
+            decision=latest_decision,
+            confidence=latest_confidence,
+        )
+        if premium_escalation.get("applied"):
+            latest_decision = str(premium_escalation["decision"])
+            latest_confidence = float(premium_escalation["confidence"])
+            latest_reasoning = str(premium_escalation["reasoning"])
+
         debate_log_dir.mkdir(parents=True, exist_ok=True)
         debate_log_path = debate_log_dir / "debate.json"
         # Atomic write: tempfile + fsync + rename. A SIGKILL mid-write would
@@ -111,6 +134,7 @@ class RealOrchestra:
             "rounds": rounds,
             "final_decision": latest_decision,
             "final_confidence": latest_confidence,
+            "premium_escalation": premium_escalation,
             "stability_history": self.detector.history,
         })
 
@@ -121,3 +145,79 @@ class RealOrchestra:
             debate_log_path=debate_log_path,
             judge_reasoning=latest_reasoning,
         )
+
+    def _maybe_run_premium_review(
+        self,
+        *,
+        feature: Feature,
+        diff: str,
+        prompt_base: str,
+        rounds: list[dict[str, Any]],
+        decision: str,
+        confidence: float,
+    ) -> dict[str, Any]:
+        policy_decision = self.review_policy.decide(
+            feature=feature,
+            diff=diff,
+            rounds=rounds,
+            decision=decision,
+            confidence=confidence,
+        )
+        record: dict[str, Any] = {
+            "requested": policy_decision.escalate,
+            "reasons": list(policy_decision.reasons),
+            "applied": False,
+        }
+        if not policy_decision.escalate:
+            return record
+        if self.premium_judge is None and self.premium_codex is None:
+            record["skipped"] = "no_premium_agents_configured"
+            return record
+
+        with span("bob.orchestra.premium_review", attrs={
+            "feature_id": feature.id,
+            "reasons": ",".join(policy_decision.reasons),
+        }):
+            premium_codex_final: dict[str, Any] | None = None
+            if self.premium_codex is not None:
+                premium_codex_msgs = self.premium_codex.run(
+                    prompt_base
+                    + "\nPremium deep review: look for subtle correctness, "
+                    + "security, architecture, and maintainability risks."
+                )
+                premium_codex_final = premium_codex_msgs[-1]
+                record["premium_codex"] = premium_codex_final
+
+            if self.premium_judge is None:
+                record["skipped"] = "no_premium_judge_configured"
+                return record
+
+            judge_prompt = (
+                prompt_base
+                + "\nBaseline review rounds JSON:\n"
+                + json.dumps(rounds[-3:], indent=2)
+            )
+            if premium_codex_final is not None:
+                judge_prompt += (
+                    "\nPremium Codex deep review:\n"
+                    + str(premium_codex_final.get("content", ""))
+                )
+            judge_prompt += (
+                "\nReturn JSON only: "
+                '{"content": "...", "decision": "approve|reject|abstain", '
+                '"confidence": 0.0}'
+            )
+            premium_judge_final = self.premium_judge.run(judge_prompt)[-1]
+            record["premium_judge"] = premium_judge_final
+
+            premium_decision = premium_judge_final.get("decision", "abstain")
+            if premium_decision not in ("approve", "reject"):
+                record["skipped"] = f"premium_decision={premium_decision}"
+                return record
+            record.update({
+                "applied": True,
+                "decision": premium_decision,
+                "confidence": float(premium_judge_final.get("confidence", 0.0)),
+                "reasoning": premium_judge_final.get("content", ""),
+            })
+            return record
