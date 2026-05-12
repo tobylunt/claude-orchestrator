@@ -66,12 +66,15 @@ class YoloConfig:
         enabled: bool = False,
         sandbox_tier: str = "host",
         max_cost: float | None = None,
+        env: dict[str, str] | None = None,
     ) -> "YoloConfig":
+        if env is None:
+            env = os.environ
         return cls(
             enabled=enabled,
             sandbox_tier=sandbox_tier,
             max_cost=max_cost,
-            max_inconclusive=int(os.environ.get("BOB_YOLO_MAX_INCONCLUSIVE", "3")),
-            vroom_severity=os.environ.get("BOB_YOLO_VROOM_SEVERITY", "high"),  # type: ignore[arg-type]
-            notify_channel=os.environ.get("BOB_YOLO_NOTIFY"),
+            max_inconclusive=int(env.get("BOB_YOLO_MAX_INCONCLUSIVE", "3")),
+            vroom_severity=env.get("BOB_YOLO_VROOM_SEVERITY", "high"),  # type: ignore[arg-type]
+            notify_channel=env.get("BOB_YOLO_NOTIFY"),
         )

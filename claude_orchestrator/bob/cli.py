@@ -14,31 +14,21 @@ from pathlib import Path
 from claude_orchestrator.bob.state_io import read_json
 
 
-def _vroom_yolo_from_env(*, sandbox_tier: str):
-    """Reconstruct the parent's YOLO config inside a vroom subprocess."""
-    if os.environ.get("BOB_VROOM_YOLO_ENABLED") != "1":
-        return None
-    from claude_orchestrator.bob.yolo import YoloConfig
-    return YoloConfig(
-        enabled=True,
-        sandbox_tier=sandbox_tier,
-        max_cost=float(os.environ.get("BOB_VROOM_YOLO_MAX_COST", "999999.0")),
-        max_inconclusive=int(os.environ.get("BOB_YOLO_MAX_INCONCLUSIVE", "3")),
-        vroom_severity=os.environ.get("BOB_VROOM_YOLO_SEVERITY", "high"),  # type: ignore[arg-type]
-        notify_channel=os.environ.get("BOB_YOLO_NOTIFY"),
-    )
-
-
 def _cmd_run(args: argparse.Namespace) -> int:
     from claude_orchestrator.bob.coordinator import RunScope
     from claude_orchestrator.bob.dotenv_loader import load_env_files
     from claude_orchestrator.bob.process_lock import (
         Lock, LockHeld, StalePidDetected, acquire_lock, release_lock,
     )
+    from claude_orchestrator.bob.run_config import RunConfig
     from claude_orchestrator.bob.signals import (
         install_handlers, register_cleanup,
     )
-    from claude_orchestrator.bob.wiring import build_coordinator
+    from claude_orchestrator.bob.wiring import (
+        build_coordinator_from_run_config,
+        build_vroom_subprocess_invocation,
+    )
+    from claude_orchestrator.bob.yolo import YoloInvariantError
 
     project_root = Path(args.project).resolve()
     if not project_root.exists():
@@ -51,7 +41,16 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if not args.inputs:
         print("error: --inputs is required (path to a markdown spec)", file=sys.stderr)
         return 2
-    spec_path = Path(args.inputs).resolve()
+    try:
+        config = RunConfig.from_args(args)
+    except YoloInvariantError as e:
+        print(f"yolo error: {e}", file=sys.stderr)
+        return 5
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+
+    spec_path = config.spec_path
     if not spec_path.exists():
         print(f"error: input spec not found: {spec_path}", file=sys.stderr)
         return 2
@@ -101,66 +100,25 @@ def _cmd_run(args: argparse.Namespace) -> int:
                 shutil.rmtree(target_dir)
             shutil.copytree(spec_path, target_dir)
 
-    sandbox_tier = (
-        args.sandbox
-        or os.environ.get("BOB_SANDBOX_TIER")
-        or "host"
-    )
-
-    from claude_orchestrator.bob.yolo import YoloConfig, YoloInvariantError
-
-    try:
-        yolo = YoloConfig.from_env(
-            enabled=args.yolo,
-            sandbox_tier=sandbox_tier,
-            max_cost=args.max_cost,
-        )
-    except YoloInvariantError as e:
-        print(f"yolo error: {e}", file=sys.stderr)
-        return 5
-
-    if yolo.enabled:
-        print(f"YOLO mode enabled: sandbox={yolo.sandbox_tier} max_cost=${yolo.max_cost} "
-              f"max_inconclusive={yolo.max_inconclusive} vroom_severity={yolo.vroom_severity}")
+    if config.yolo.enabled:
+        print(f"YOLO mode enabled: sandbox={config.yolo.sandbox_tier} "
+              f"max_cost=${config.yolo.max_cost} "
+              f"max_inconclusive={config.yolo.max_inconclusive} "
+              f"vroom_severity={config.yolo.vroom_severity}")
 
     from claude_orchestrator.bob.observability import setup_tracing
     setup_tracing(
         service_name="bob",
-        otlp_endpoint=args.otel_endpoint,
+        otlp_endpoint=config.otel_endpoint,
     )
 
-    coord = build_coordinator(
-        project_root=project_root,
-        spec_path=spec_path,
-        max_iterations=args.max_iterations,
-        disabled_gates=set(args.no_gate),
-        sandbox_tier=sandbox_tier,
-        yolo=yolo,  # NEW
-    )
+    coord = build_coordinator_from_run_config(config)
 
     # If --vroom is set, spawn the Vroom daemon as a subprocess.
     vroom_proc = None
-    if args.vroom:
+    if config.vroom:
         import subprocess as _subprocess
-        import sys as _sys
-        vroom_cmd = [
-            _sys.executable, "-m", "claude_orchestrator.bob.cli",
-            "vroom",
-            "--project", str(project_root),
-            "--interval", "1800",
-            "--sandbox", sandbox_tier,
-        ]
-        # Pass through stub env vars so the child uses the same offline mode if any.
-        child_env = os.environ.copy()
-        if yolo and yolo.enabled:
-            child_env["BOB_VROOM_YOLO_ENABLED"] = "1"
-            child_env["BOB_VROOM_YOLO_SEVERITY"] = yolo.vroom_severity
-            child_env["BOB_VROOM_YOLO_MAX_COST"] = str(yolo.max_cost)
-            child_env["BOB_YOLO_MAX_INCONCLUSIVE"] = str(yolo.max_inconclusive)
-        # Forward --otel-endpoint CLI arg as env to the subprocess so it can
-        # call setup_tracing() and emit spans to the same backend.
-        if args.otel_endpoint:
-            child_env["OTEL_EXPORTER_OTLP_ENDPOINT"] = args.otel_endpoint
+        vroom_cmd, child_env = build_vroom_subprocess_invocation(config)
         vroom_proc = _subprocess.Popen(
             vroom_cmd,
             stdout=_subprocess.DEVNULL,
@@ -255,12 +213,9 @@ def _cmd_vroom_start(args: argparse.Namespace) -> int:
     from claude_orchestrator.bob.dotenv_loader import load_env_files
     from claude_orchestrator.bob.observability import setup_tracing
     from claude_orchestrator.bob.signals import install_handlers, is_shutdown_requested
-    from claude_orchestrator.bob.vroom.auditor_pool import AuditorPool
-    from claude_orchestrator.bob.vroom.daemon import VroomDaemon
-    from claude_orchestrator.bob.vroom.auditors.semgrep import SemgrepAuditor
-    from claude_orchestrator.bob.vroom.audit_cycle import VroomAuditCycle
-    from claude_orchestrator.bob.vroom.fix_loop import FixLoopDriver
-    from claude_orchestrator.bob.vroom.triage import VroomTriageGate
+    from claude_orchestrator.bob.vroom_config import VroomConfig
+    from claude_orchestrator.bob.wiring import build_vroom_daemon
+    from claude_orchestrator.bob.yolo import YoloInvariantError
 
     project_root = Path(args.project).resolve()
     if not project_root.exists():
@@ -269,6 +224,14 @@ def _cmd_vroom_start(args: argparse.Namespace) -> int:
 
     # Auto-load .env files before reading any env vars.
     load_env_files(project_root=project_root, cwd=Path.cwd())
+    try:
+        config = VroomConfig.from_daemon_args(args)
+    except YoloInvariantError as e:
+        print(f"yolo error: {e}", file=sys.stderr)
+        return 5
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
 
     # Wire OTEL in the subprocess so span() calls actually emit.
     # Without this, the daemon's bob.vroom.cycle / bob.mcloop.iter spans are
@@ -283,120 +246,18 @@ def _cmd_vroom_start(args: argparse.Namespace) -> int:
     set_run_context(run_id=daemon_run_id, bob_dir=bob_dir)
 
     install_handlers()
-
-    use_stub = os.environ.get("BOB_USE_STUB_VROOM", "0") == "1"
-    if use_stub:
-        from claude_orchestrator.bob.vroom.auditors.llm_stubs import (
-            CodexSecurityAuditorStub,
-        )
-
-        class _ClaudeStub:
-            id = "claude_architect"
-
-            def triggers_on(self, changed_files):
-                return True
-
-            def audit(self, workspace, changed_files):
-                return []
-
-        claude_aud = _ClaudeStub()
-    else:
-        from claude_orchestrator.bob.vroom.auditors.claude_architect import ClaudeArchitectAuditor
-        claude_aud = ClaudeArchitectAuditor()
-
-    if use_stub:
-        from claude_orchestrator.bob.vroom.auditors.llm_stubs import CodexSecurityAuditorStub
-        codex_aud = CodexSecurityAuditorStub()
-    else:
-        from claude_orchestrator.bob.vroom.auditors.codex_security import CodexSecurityAuditor
-        codex_aud = CodexSecurityAuditor()
-    pool = AuditorPool([SemgrepAuditor(), claude_aud, codex_aud])
-
-    sandbox_tier = (
-        getattr(args, "sandbox", None)
-        or os.environ.get("BOB_SANDBOX_TIER")
-        or "host"
-    )
-    yolo = _vroom_yolo_from_env(sandbox_tier=sandbox_tier)
-    triage_gate = VroomTriageGate(yolo=yolo)
-
-    # The fix-loop spawns isolated McLoops on vroom/<id> branches. The
-    # sandbox tier propagates from the parent `bob run` via --sandbox or
-    # BOB_SANDBOX_TIER so YOLO+docker doesn't silently fall back to host.
-    from claude_orchestrator.bob.mcloop.runner import McLoopRunner
-    from claude_orchestrator.bob.verifiers.python_pytest import PythonPytestVerifier
-    from claude_orchestrator.bob.wiring import _build_executor
-
-    executor = _build_executor(sandbox_tier, project_root=project_root)
-    runner = McLoopRunner(
-        claude_cmd="claude",
-        max_iterations=10,
-        executor=executor,
-        yolo=yolo,
-    )
-    verifier = PythonPytestVerifier()
-
-    def run_mcloop_for_finding(*, branch_name: str, workspace: Path, finding) -> bool:
-        from claude_orchestrator.models import (
-            Feature, FeatureStatus, TaskType, VerificationPlan,
-        )
-        feature = Feature(
-            id=0,
-            name=f"fix-{finding.rule_id}",
-            description=f"Fix: {finding.message}",
-            task_type=TaskType.LIBRARY,
-            verification_plan=VerificationPlan(
-                verifier_id="python_pytest",
-                success_criteria=["all tests pass"],
-                required_tools=["pytest"],
-            ),
-            status=FeatureStatus.PENDING,
-        )
-        from claude_orchestrator.bob.vroom.fix_loop import render_finding_spec
-        vroom_feature_dir = project_root / ".bob" / "vroom-features" / branch_name.replace("/", "-")
-        vroom_feature_dir.mkdir(parents=True, exist_ok=True)
-        (vroom_feature_dir / "spec.md").write_text(render_finding_spec(finding))
-        for f in ("activity.md", "failed_attempts.md", "verifier-results.jsonl"):
-            (vroom_feature_dir / f).write_text("")
-        master_spec = project_root / ".bob" / "spec.md"
-        if not master_spec.exists():
-            master_spec.write_text("# (vroom)\n")
-
-        result = runner.run(
-            feature=feature,
-            workspace=workspace,
-            master_spec=master_spec,
-            feature_dir=vroom_feature_dir,
-            verifier=verifier,
-        )
-        return result.outcome == "exit_signal"
-
-    fix_driver = FixLoopDriver(
-        repo=project_root,
-        run_mcloop=run_mcloop_for_finding,
-    )
-
-    cycle = VroomAuditCycle(
-        project_root=project_root,
-        auditor_pool=pool,
-        triage_gate=triage_gate,
-        fix_driver=fix_driver,
-    )
-
-    daemon = VroomDaemon(
-        project_root=project_root,
-        audit_cycle=cycle.run,
-        timer_interval_s=args.interval,
-        watch_main_ref=args.watch_main_ref,
-    )
+    daemon = build_vroom_daemon(config)
     daemon.write_pid()
-    print(f"vroom daemon started (pid: {os.getpid()}, interval: {args.interval}s)")
+    print(
+        f"vroom daemon started (pid: {os.getpid()}, "
+        f"interval: {config.timer_interval_s}s)"
+    )
     print("Ctrl-C to stop")
 
     try:
         while not is_shutdown_requested():
             daemon.run_one_iteration()
-            time.sleep(min(args.interval, 5))
+            time.sleep(min(config.timer_interval_s, 5))
     finally:
         daemon.remove_pid()
     print("vroom daemon stopped")
@@ -433,15 +294,25 @@ def _cmd_vroom_now(args: argparse.Namespace) -> int:
     from claude_orchestrator.bob.cost_tracker import set_run_context
     from claude_orchestrator.bob.dotenv_loader import load_env_files
     from claude_orchestrator.bob.observability import setup_tracing
-    from claude_orchestrator.bob.vroom.auditor_pool import AuditorPool
-    from claude_orchestrator.bob.vroom.auditors.semgrep import SemgrepAuditor
-    from claude_orchestrator.bob.vroom.audit_cycle import VroomAuditCycle
-    from claude_orchestrator.bob.vroom.triage import VroomTriageGate
+    from claude_orchestrator.bob.vroom_config import VroomConfig
+    from claude_orchestrator.bob.wiring import build_vroom_audit_cycle
+    from claude_orchestrator.bob.yolo import YoloInvariantError
 
     project_root = Path(args.project).resolve()
+    if not project_root.exists():
+        print(f"error: project root not found: {project_root}", file=sys.stderr)
+        return 2
 
     # Auto-load .env files before reading any env vars.
     load_env_files(project_root=project_root, cwd=Path.cwd())
+    try:
+        config = VroomConfig.from_now_args(args)
+    except YoloInvariantError as e:
+        print(f"yolo error: {e}", file=sys.stderr)
+        return 5
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
 
     # Same OTEL hookup as _cmd_vroom_start; without this, vroom spans are no-ops.
     setup_tracing(service_name="bob-vroom")
@@ -454,42 +325,9 @@ def _cmd_vroom_now(args: argparse.Namespace) -> int:
     vroom_run_id = f"vroom-{uuid.uuid4()}"
     set_run_context(run_id=vroom_run_id, bob_dir=bob_dir)
 
-    use_stub = os.environ.get("BOB_USE_STUB_VROOM", "0") == "1"
-    if use_stub:
-        class _ClaudeStub:
-            id = "claude_architect"
-
-            def triggers_on(self, changed_files):
-                return True
-
-            def audit(self, workspace, changed_files):
-                return []
-
-        claude_aud = _ClaudeStub()
-    else:
-        from claude_orchestrator.bob.vroom.auditors.claude_architect import ClaudeArchitectAuditor
-        claude_aud = ClaudeArchitectAuditor()
-
-    if use_stub:
-        from claude_orchestrator.bob.vroom.auditors.llm_stubs import CodexSecurityAuditorStub
-        codex_aud = CodexSecurityAuditorStub()
-    else:
-        from claude_orchestrator.bob.vroom.auditors.codex_security import CodexSecurityAuditor
-        codex_aud = CodexSecurityAuditor()
-    pool = AuditorPool([SemgrepAuditor(), claude_aud, codex_aud])
-
-    yolo = _vroom_yolo_from_env(
-        sandbox_tier=os.environ.get("BOB_SANDBOX_TIER", "docker")
-    )
-    triage_gate = VroomTriageGate(yolo=yolo)
     # No fix_driver in `vroom now` — keep the cycle to "audit + persist + triage" without
     # actually running a fix-loop, so the user can review then run again with --fix.
-    cycle = VroomAuditCycle(
-        project_root=project_root,
-        auditor_pool=pool,
-        triage_gate=triage_gate,
-        fix_driver=None,
-    )
+    cycle = build_vroom_audit_cycle(config, include_fix_driver=False)
     clusters = cycle.run()
     print(f"vroom cycle complete: {len(clusters)} clusters")
     for c in clusters[:10]:

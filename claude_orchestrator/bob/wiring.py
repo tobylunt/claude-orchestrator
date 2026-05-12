@@ -13,12 +13,14 @@ from typing import Any
 
 from claude_orchestrator.bob.coordinator import Coordinator
 from claude_orchestrator.bob.duplo.markdown_parser import parse_markdown_spec
+from claude_orchestrator.bob.run_config import RunConfig
 from claude_orchestrator.bob.state_io import append_jsonl
 from claude_orchestrator.bob.hitl.gates import GateRegistry, PostDuploGate
 from claude_orchestrator.bob.mcloop.runner import McLoopResult, McLoopRunner
 from claude_orchestrator.bob.orchestra.stub import OrchestraStub
 from claude_orchestrator.bob.verifiers.protocol import Verifier
 from claude_orchestrator.bob.verifiers.registry import VerifierRegistry
+from claude_orchestrator.bob.vroom_config import VroomConfig
 from claude_orchestrator.bob.yolo import YoloConfig
 from claude_orchestrator.models import Feature, Verdict
 
@@ -278,4 +280,180 @@ def build_coordinator(
         mcloop=mcloop_callable,
         orchestra=orchestra_callable,
         gates=gates,
+    )
+
+
+def build_coordinator_from_run_config(config: RunConfig) -> Coordinator:
+    """Assemble the run Coordinator from resolved CLI config."""
+    return build_coordinator(
+        project_root=config.project_root,
+        spec_path=config.spec_path,
+        max_iterations=config.max_iterations,
+        disabled_gates=set(config.disabled_gates),
+        sandbox_tier=config.sandbox_tier,
+        yolo=config.yolo,
+    )
+
+
+def build_vroom_subprocess_invocation(
+    config: RunConfig,
+    *,
+    base_env: dict[str, str] | None = None,
+    python_executable: str | None = None,
+) -> tuple[list[str], dict[str, str]]:
+    """Return the command and environment for the optional Vroom subprocess."""
+    if base_env is None:
+        base_env = os.environ
+    cmd = [
+        python_executable or sys.executable,
+        "-m",
+        "claude_orchestrator.bob.cli",
+        "vroom",
+        "--project",
+        str(config.project_root),
+        "--interval",
+        "1800",
+        "--sandbox",
+        config.sandbox_tier,
+    ]
+    child_env = dict(base_env)
+    if config.yolo.enabled:
+        child_env["BOB_VROOM_YOLO_ENABLED"] = "1"
+        child_env["BOB_VROOM_YOLO_SEVERITY"] = config.yolo.vroom_severity
+        child_env["BOB_VROOM_YOLO_MAX_COST"] = str(config.yolo.max_cost)
+        child_env["BOB_YOLO_MAX_INCONCLUSIVE"] = str(config.yolo.max_inconclusive)
+    if config.otel_endpoint:
+        child_env["OTEL_EXPORTER_OTLP_ENDPOINT"] = config.otel_endpoint
+    return cmd, child_env
+
+
+class _NoFindingClaudeAuditor:
+    id = "claude_architect"
+
+    def triggers_on(self, changed_files):
+        return True
+
+    def audit(self, workspace, changed_files):
+        return []
+
+
+def build_vroom_auditor_pool(config: VroomConfig):
+    """Build the Vroom auditor pool from resolved config."""
+    from claude_orchestrator.bob.vroom.auditor_pool import AuditorPool
+    from claude_orchestrator.bob.vroom.auditors.semgrep import SemgrepAuditor
+
+    if config.use_stub:
+        from claude_orchestrator.bob.vroom.auditors.llm_stubs import (
+            CodexSecurityAuditorStub,
+        )
+        claude_aud = _NoFindingClaudeAuditor()
+        codex_aud = CodexSecurityAuditorStub()
+    else:
+        from claude_orchestrator.bob.vroom.auditors.claude_architect import (
+            ClaudeArchitectAuditor,
+        )
+        from claude_orchestrator.bob.vroom.auditors.codex_security import (
+            CodexSecurityAuditor,
+        )
+        claude_aud = ClaudeArchitectAuditor()
+        codex_aud = CodexSecurityAuditor()
+
+    return AuditorPool([SemgrepAuditor(), claude_aud, codex_aud])
+
+
+def build_vroom_fix_driver(config: VroomConfig):
+    """Build the Vroom fix-loop driver, including its McLoop runner."""
+    from claude_orchestrator.bob.mcloop.runner import McLoopRunner
+    from claude_orchestrator.bob.verifiers.python_pytest import PythonPytestVerifier
+    from claude_orchestrator.bob.vroom.fix_loop import (
+        FixLoopDriver,
+        render_finding_spec,
+    )
+
+    executor = _build_executor(config.sandbox_tier, project_root=config.project_root)
+    runner = McLoopRunner(
+        claude_cmd="claude",
+        max_iterations=10,
+        executor=executor,
+        yolo=config.yolo,
+    )
+    verifier = PythonPytestVerifier()
+
+    def run_mcloop_for_finding(*, branch_name: str, workspace: Path, finding) -> bool:
+        from claude_orchestrator.models import (
+            FeatureStatus,
+            TaskType,
+            VerificationPlan,
+        )
+
+        feature = Feature(
+            id=0,
+            name=f"fix-{finding.rule_id}",
+            description=f"Fix: {finding.message}",
+            task_type=TaskType.LIBRARY,
+            verification_plan=VerificationPlan(
+                verifier_id="python_pytest",
+                success_criteria=["all tests pass"],
+                required_tools=["pytest"],
+            ),
+            status=FeatureStatus.PENDING,
+        )
+        vroom_feature_dir = (
+            config.project_root
+            / ".bob"
+            / "vroom-features"
+            / branch_name.replace("/", "-")
+        )
+        vroom_feature_dir.mkdir(parents=True, exist_ok=True)
+        (vroom_feature_dir / "spec.md").write_text(render_finding_spec(finding))
+        for filename in ("activity.md", "failed_attempts.md", "verifier-results.jsonl"):
+            (vroom_feature_dir / filename).write_text("")
+
+        master_spec = config.project_root / ".bob" / "spec.md"
+        if not master_spec.exists():
+            master_spec.write_text("# (vroom)\n")
+
+        result = runner.run(
+            feature=feature,
+            workspace=workspace,
+            master_spec=master_spec,
+            feature_dir=vroom_feature_dir,
+            verifier=verifier,
+        )
+        return result.outcome == "exit_signal"
+
+    return FixLoopDriver(
+        repo=config.project_root,
+        run_mcloop=run_mcloop_for_finding,
+    )
+
+
+def build_vroom_audit_cycle(
+    config: VroomConfig,
+    *,
+    include_fix_driver: bool,
+):
+    """Build one full Vroom audit cycle from resolved config."""
+    from claude_orchestrator.bob.vroom.audit_cycle import VroomAuditCycle
+    from claude_orchestrator.bob.vroom.triage import VroomTriageGate
+
+    fix_driver = build_vroom_fix_driver(config) if include_fix_driver else None
+    return VroomAuditCycle(
+        project_root=config.project_root,
+        auditor_pool=build_vroom_auditor_pool(config),
+        triage_gate=VroomTriageGate(yolo=config.yolo),
+        fix_driver=fix_driver,
+    )
+
+
+def build_vroom_daemon(config: VroomConfig):
+    """Build the long-running Vroom daemon from resolved config."""
+    from claude_orchestrator.bob.vroom.daemon import VroomDaemon
+
+    cycle = build_vroom_audit_cycle(config, include_fix_driver=True)
+    return VroomDaemon(
+        project_root=config.project_root,
+        audit_cycle=cycle.run,
+        timer_interval_s=config.timer_interval_s,
+        watch_main_ref=config.watch_main_ref,
     )
