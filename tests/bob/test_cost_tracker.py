@@ -55,6 +55,28 @@ def test_estimate_cost_known_model():
     assert cost < 100  # sanity bound
 
 
+def test_estimate_cost_uses_current_frontier_prices():
+    """Pricing table tracks current Opus/GPT rates, not older stale estimates."""
+    assert estimate_cost(
+        provider="anthropic",
+        model="claude-opus-4-7",
+        tokens_in=1_000_000,
+        tokens_out=1_000_000,
+    ) == pytest.approx(30.0)
+    assert estimate_cost(
+        provider="openai",
+        model="gpt-5.4",
+        tokens_in=1_000_000,
+        tokens_out=1_000_000,
+    ) == pytest.approx(17.5)
+    assert estimate_cost(
+        provider="openai",
+        model="gpt-5.5",
+        tokens_in=1_000_000,
+        tokens_out=1_000_000,
+    ) == pytest.approx(35.0)
+
+
 def test_estimate_cost_unknown_model():
     """Unknown models return None (we still record tokens)."""
     cost = estimate_cost(

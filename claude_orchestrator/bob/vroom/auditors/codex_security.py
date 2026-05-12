@@ -16,6 +16,11 @@ import re
 from pathlib import Path
 from typing import Protocol
 
+from claude_orchestrator.bob.openai_config import (
+    OpenAIReasoningEffort,
+    openai_reasoning_kwargs,
+    resolve_openai_reasoning_effort,
+)
 from claude_orchestrator.models import Finding, SARIFLocation
 
 
@@ -28,9 +33,22 @@ class OpenAIClient(Protocol):
 class _ProductionOpenAIClient:
     """Real OpenAI API call. Lazy-built when no client is injected."""
 
-    def __init__(self, *, model: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        model: str | None = None,
+        reasoning_effort: OpenAIReasoningEffort | None = None,
+    ) -> None:
         self.model = model or os.environ.get(
             "BOB_VROOM_CODEX_MODEL", "gpt-5.4"
+        )
+        self.reasoning_effort = (
+            reasoning_effort
+            if reasoning_effort is not None
+            else resolve_openai_reasoning_effort(
+                env_var="BOB_VROOM_CODEX_EFFORT",
+                default="low",
+            )
         )
 
     def audit_workspace(self, workspace: Path, changed_files: list[Path]) -> str:
@@ -89,6 +107,10 @@ class _ProductionOpenAIClient:
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
+            **openai_reasoning_kwargs(
+                model=self.model,
+                reasoning_effort=self.reasoning_effort,
+            ),
         )
 
         usage = getattr(response, "usage", None)
