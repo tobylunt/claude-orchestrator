@@ -11,6 +11,7 @@ from claude_orchestrator.bob.vroom_config import (
     VroomConfig,
     yolo_from_subprocess_env,
 )
+from claude_orchestrator.bob.yolo import YoloInvariantError
 
 
 def _daemon_args(
@@ -67,6 +68,14 @@ def test_yolo_from_subprocess_env_defaults_when_partial():
     assert cfg is not None
     assert cfg.max_inconclusive == 3
     assert cfg.vroom_severity == "high"
+
+
+def test_yolo_from_subprocess_env_requires_forwarded_max_cost():
+    with pytest.raises(YoloInvariantError, match="BOB_VROOM_YOLO_MAX_COST"):
+        yolo_from_subprocess_env(
+            sandbox_tier="docker",
+            env={"BOB_VROOM_YOLO_ENABLED": "1"},
+        )
 
 
 def test_from_daemon_args_uses_host_default(tmp_path: Path):
