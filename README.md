@@ -40,6 +40,9 @@ EOF
 # Validate the spec before running
 bob validate --inputs my_spec.md
 
+# Or ask Duplo to draft a spec from a directory of rough inputs, then review it
+bob draft --inputs ./inputs --output draft_spec.md
+
 # Run (from your project root)
 bob run --inputs my_spec.md
 
@@ -66,6 +69,7 @@ bob run --inputs spec.md --yolo --sandbox docker --max-cost 20
 | `bob run` | Run the full orchestration pipeline (Duplo → McLoop → Orchestra → optional Vroom). |
 | `bob status` | Print current phase, active feature, and per-feature statuses. |
 | `bob validate` | Parse and validate a spec file without acquiring the run lock. |
+| `bob draft` | Run Duplo only and emit a parser-readable draft spec for human review. |
 | `bob costs` | Aggregate cost data from `.bob/costs.jsonl`. |
 | `bob runs` | Show recent runs with duration, outcome, and cost from `.bob/run-log.jsonl`. |
 | `bob vroom` | Start the Vroom audit daemon in the foreground (blocking). |
@@ -89,6 +93,16 @@ bob run --inputs spec.md --yolo --sandbox docker --max-cost 20
 ### `bob costs` flags
 
 `--by {run|provider|phase|model}` — grouping dimension (default: `run`).
+
+### `bob draft` flags
+
+`--inputs PATH` — markdown spec file or directory of rough Duplo inputs.
+`--output PATH` — optional output file; omitted means print the draft spec to stdout.
+
+Use `bob draft` when the contract itself needs review before implementation.
+It does not acquire the run lock, materialize feature worktrees, or enter
+McLoop. Real multimodal Duplo calls can still record `duplo` cost rows in
+`.bob/costs.jsonl`.
 
 ### `bob runs` flags
 
@@ -324,6 +338,12 @@ Bob ships four built-in verifiers, selected per-feature in the spec:
 - Hard budget enforcement for `--max-cost` — currently advisory; planned as the next budget-guard layer.
 - Docker sandbox does not auto-mount `$HOME/.claude` for claude auth inside the container; see the note in `bob.dockerfile.example`.
 - `bob run --inputs <directory>` (multimodal Duplo from a folder of images/docs) is wired but the vision extraction path depends on `BOB_USE_STUB_DUPLO=0` and a configured `BOB_DUPLO_MODEL`.
+
+### Agent control surfaces
+
+- `MAINTAIN.md` records Bob's work principles and invariants for future agents.
+- `BUGS.md` records unchecked bugs, deferred contract gaps, and `[RULEDOUT]`
+  dead ends that should not be retried.
 
 ---
 

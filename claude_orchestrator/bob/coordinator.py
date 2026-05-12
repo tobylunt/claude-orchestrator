@@ -186,21 +186,12 @@ class Coordinator:
     # ---- internals ----
 
     def _materialize_spec(self, spec: Spec) -> None:
-        # Master spec as markdown:
-        master = ["# " + spec.title, "", "## Motivation", spec.motivation, "",
-                  "## Features"]
-        for f in spec.features:
-            master.append(f"### F{f.id}: {f.name}")
-            master.append(f"- task_type: {f.task_type}")
-            master.append(f"- verifier: {f.verification_plan.verifier_id}")
-            master.append("- success_criteria:")
-            for c in f.verification_plan.success_criteria:
-                master.append(f"  - {c}")
-            master.append(f"- description: {f.description}")
+        from claude_orchestrator.bob.spec_markdown import format_markdown_spec
+
         # Atomic: tempfile + fsync + rename. A SIGKILL mid-write would
         # otherwise leave a truncated spec.md; McLoop would then feed a
         # half-formed master spec into every iteration.
-        write_text_atomic(self.bob_dir / "spec.md", "\n".join(master) + "\n")
+        write_text_atomic(self.bob_dir / "spec.md", format_markdown_spec(spec))
 
         for f in spec.features:
             d = self.bob_dir / "features" / _feature_dirname(f)

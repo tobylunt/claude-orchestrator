@@ -1,4 +1,4 @@
-"""Bob CLI — subcommands `run`, `status`.
+"""Bob CLI — subcommands `run`, `draft`, `status`.
 
 Invoked via `python -m claude_orchestrator.bob.cli` or as `bob`
 (when registered in pyproject.toml's [project.scripts]).
@@ -179,6 +179,57 @@ def _cmd_validate(args: argparse.Namespace) -> int:
     for f in spec.features:
         print(f"        [{f.id}] {f.name} (task_type={f.task_type}, "
               f"verifier={f.verification_plan.verifier_id})")
+    return 0
+
+
+def _cmd_draft(args: argparse.Namespace) -> int:
+    """Run Duplo only and emit a parser-readable Bob spec for review."""
+    import uuid
+    from claude_orchestrator.bob.cost_tracker import set_run_context
+    from claude_orchestrator.bob.dotenv_loader import load_env_files
+    from claude_orchestrator.bob.duplo.draft import draft_spec_from_inputs
+    from claude_orchestrator.bob.duplo.markdown_parser import SpecParseError
+    from claude_orchestrator.bob.spec_markdown import format_markdown_spec
+    from claude_orchestrator.bob.state_io import write_text_atomic
+
+    project_root = Path(args.project).resolve()
+    if not project_root.exists():
+        print(f"error: project root not found: {project_root}", file=sys.stderr)
+        return 2
+
+    load_env_files(project_root=project_root, cwd=Path.cwd())
+
+    inputs_path = Path(args.inputs).resolve()
+    if not inputs_path.exists():
+        print(f"error: input path not found: {inputs_path}", file=sys.stderr)
+        return 2
+
+    # Real multimodal Duplo can record API cost rows. Establish a draft run
+    # context without acquiring the main run lock or materializing features.
+    set_run_context(
+        run_id=f"draft-{uuid.uuid4()}",
+        bob_dir=project_root / ".bob",
+    )
+
+    try:
+        spec = draft_spec_from_inputs(inputs_path)
+    except SpecParseError as e:
+        print(f"spec error: {e}", file=sys.stderr)
+        return 4
+    except FileNotFoundError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    except ValueError as e:
+        print(f"duplo error: {e}", file=sys.stderr)
+        return 4
+
+    markdown = format_markdown_spec(spec)
+    if args.output:
+        output_path = Path(args.output).resolve()
+        write_text_atomic(output_path, markdown)
+        print(f"draft spec written to {output_path}")
+    else:
+        print(markdown, end="")
     return 0
 
 
@@ -523,6 +574,14 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("--inputs", required=True,
                           help="path to a markdown spec")
     validate.set_defaults(func=_cmd_validate)
+
+    draft = sub.add_parser("draft", help="run Duplo only and emit a draft spec")
+    draft.add_argument("--project", default=".", help="project root (default: cwd)")
+    draft.add_argument("--inputs", required=True,
+                       help="path to a markdown spec or directory of Duplo inputs")
+    draft.add_argument("--output", default=None,
+                       help="write draft markdown spec to this path (default: stdout)")
+    draft.set_defaults(func=_cmd_draft)
 
     costs = sub.add_parser("costs", help="aggregate Bob cost data from .bob/costs.jsonl")
     costs.add_argument("--project", default=".", help="project root (default: cwd)")

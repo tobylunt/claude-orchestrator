@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from claude_orchestrator.bob.coordinator import Coordinator
-from claude_orchestrator.bob.duplo.markdown_parser import parse_markdown_spec
+from claude_orchestrator.bob.duplo.draft import draft_spec_from_inputs
 from claude_orchestrator.bob.run_config import RunConfig
 from claude_orchestrator.bob.state_io import append_jsonl
 from claude_orchestrator.bob.hitl.gates import GateRegistry, PostDuploGate
@@ -182,25 +182,7 @@ def build_coordinator(
     orchestra_obj = _build_orchestra()
 
     def duplo_callable():
-        if spec_path.is_dir():
-            # Multimodal path (M2): use real Duplo with Anthropic vision.
-            if os.environ.get("BOB_USE_STUB_DUPLO", "0") == "1":
-                # Offline mode: parse the markdown spec inside the directory if present.
-                md_in_dir = spec_path / "spec.md"
-                if md_in_dir.exists():
-                    spec = parse_markdown_spec(md_in_dir)
-                else:
-                    raise RuntimeError(
-                        f"BOB_USE_STUB_DUPLO=1 but no {md_in_dir} found"
-                    )
-            else:
-                from claude_orchestrator.bob.duplo.real import RealDuplo
-                from claude_orchestrator.bob.duplo.multimodal import AnthropicMultimodalClient
-                duplo = RealDuplo(multimodal=AnthropicMultimodalClient())
-                spec = duplo.elicit_from_directory(spec_path)
-        else:
-            # Single-file markdown path (M2a behavior preserved).
-            spec = parse_markdown_spec(spec_path)
+        spec = draft_spec_from_inputs(spec_path)
         # Meta-rubric coverage check (spec §6.6): ask an LLM judge whether the
         # assigned verifier actually verifies each feature's success criteria.
         # The YOLO PostDuploGate auto-approve requires this to be True; in
