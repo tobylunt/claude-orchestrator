@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from claude_orchestrator.bob.run_config import resolve_sandbox_tier
-from claude_orchestrator.bob.yolo import YoloConfig
+from claude_orchestrator.bob.yolo import YoloConfig, YoloInvariantError
 
 
 def yolo_from_subprocess_env(
@@ -21,10 +21,15 @@ def yolo_from_subprocess_env(
         env = os.environ
     if env.get("BOB_VROOM_YOLO_ENABLED") != "1":
         return None
+    raw_max_cost = env.get("BOB_VROOM_YOLO_MAX_COST")
+    if raw_max_cost is None:
+        raise YoloInvariantError(
+            "Vroom YOLO subprocess env is missing BOB_VROOM_YOLO_MAX_COST"
+        )
     return YoloConfig(
         enabled=True,
         sandbox_tier=sandbox_tier,
-        max_cost=float(env.get("BOB_VROOM_YOLO_MAX_COST", "999999.0")),
+        max_cost=float(raw_max_cost),
         max_inconclusive=int(env.get("BOB_YOLO_MAX_INCONCLUSIVE", "3")),
         vroom_severity=env.get("BOB_VROOM_YOLO_SEVERITY", "high"),  # type: ignore[arg-type]
         notify_channel=env.get("BOB_YOLO_NOTIFY"),

@@ -1,4 +1,5 @@
 """Unit tests for the bob/wiring.py composition module."""
+import argparse
 import subprocess as sp
 from pathlib import Path
 
@@ -305,6 +306,27 @@ def test_build_vroom_subprocess_invocation_forwards_yolo_and_otel(tmp_path: Path
     assert env["BOB_VROOM_YOLO_SEVERITY"] == "critical"
     assert env["BOB_VROOM_YOLO_MAX_COST"] == "12.5"
     assert env["BOB_YOLO_MAX_INCONCLUSIVE"] == "7"
+    assert env["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://localhost:6006/v1/traces"
+
+
+def test_run_config_otel_env_reaches_vroom_subprocess(tmp_path: Path):
+    cfg = RunConfig.from_args(
+        argparse.Namespace(
+            project=str(tmp_path),
+            inputs=str(tmp_path / "spec.md"),
+            max_iterations=1,
+            max_cost=None,
+            no_gate=[],
+            sandbox=None,
+            vroom=True,
+            yolo=False,
+            otel_endpoint=None,
+        ),
+        env={"OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:6006/v1/traces"},
+    )
+
+    _, env = build_vroom_subprocess_invocation(cfg, base_env={})
+
     assert env["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://localhost:6006/v1/traces"
 
 

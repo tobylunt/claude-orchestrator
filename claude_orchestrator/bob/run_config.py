@@ -81,6 +81,11 @@ class RunConfig:
             env=env,
         )
 
+        otel_endpoint = (
+            getattr(args, "otel_endpoint", None)
+            or env.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+        )
+
         return cls(
             project_root=Path(args.project).resolve(),
             spec_path=Path(inputs).resolve(),
@@ -90,5 +95,5 @@ class RunConfig:
             yolo=yolo,
             disabled_gates=frozenset(getattr(args, "no_gate", []) or []),
             vroom=bool(getattr(args, "vroom", False)),
-            otel_endpoint=getattr(args, "otel_endpoint", None),
+            otel_endpoint=otel_endpoint,
         )

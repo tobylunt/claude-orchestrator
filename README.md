@@ -9,7 +9,7 @@ Bob is a Python CLI that orchestrates multi-phase AI-driven feature development.
 **Prerequisites:** Python 3.10+, the `claude` CLI in your PATH, and (for Orchestra / Vroom) API keys for Anthropic and OpenAI.
 
 ```bash
-# Install
+# Install into your active Python environment
 pip install -e ".[m2]"
 
 # Put your API keys in the user-level .env (loaded automatically by Bob)
@@ -22,11 +22,19 @@ EOF
 # Write a spec (see docs/superpowers/specs/2026-05-06-bob-design.md for format)
 cat > my_spec.md <<'EOF'
 # My Feature
+
 ## Motivation
-…
+Add a small verified behavior.
+
 ## Features
-### [F01] Hello world
-…
+
+### F1: Hello world
+- task_type: library
+- verifier: python_pytest
+- success_criteria:
+  - pytest passes for the new behavior
+- description: |
+    Add a hello-world behavior with focused tests.
 EOF
 
 # Validate the spec before running
@@ -42,7 +50,8 @@ bob status
 bob costs --by phase
 ```
 
-To run fully unattended overnight, use **YOLO mode** (requires Docker sandbox and a cost cap):
+To run fully unattended overnight, use **YOLO mode** (requires a Docker or
+devcontainer sandbox and an explicit advisory budget):
 
 ```bash
 bob run --inputs spec.md --yolo --sandbox docker --max-cost 20
@@ -70,10 +79,10 @@ bob run --inputs spec.md --yolo --sandbox docker --max-cost 20
 | `--inputs PATH` | required | Path to a markdown spec file or directory of multimodal inputs. |
 | `--project DIR` | `.` (cwd) | Project root — where `.bob/` is created. |
 | `--max-iterations N` | `30` | McLoop iteration cap per feature. |
-| `--max-cost USD` | none | Advisory USD spend cap. Required by `--yolo`. |
+| `--max-cost USD` | none | Advisory USD spend bound. Required by `--yolo`; hard enforcement is planned budget-guard work. |
 | `--sandbox {host,docker,devcontainer}` | `host` | Sandbox tier (or `BOB_SANDBOX_TIER`). |
 | `--vroom` | off | Spawn the Vroom daemon in parallel with the feature loop. |
-| `--yolo` | off | Enable YOLO mode (unattended; requires `--sandbox docker` and `--max-cost`). |
+| `--yolo` | off | Enable YOLO mode (unattended; requires `--sandbox docker` or `--sandbox devcontainer`, plus `--max-cost`). |
 | `--no-gate NAME` | none | Disable a named HITL gate (repeatable). |
 | `--otel-endpoint URL` | `$OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP traces endpoint. |
 
@@ -142,9 +151,14 @@ Override any default model via environment variable. The defaults are listed in 
 | `BOB_ORCHESTRA_CODEX_EFFORT` | `medium` |
 | `BOB_ORCHESTRA_FAST_JUDGE_MODEL` | `claude-sonnet-4-6` |
 | `BOB_ORCHESTRA_PREMIUM_POLICY` | `adaptive` |
+| `BOB_ORCHESTRA_PREMIUM_MIN_CONFIDENCE` | `0.85` |
+| `BOB_ORCHESTRA_PREMIUM_DIFF_BYTES` | `12000` |
+| `BOB_ORCHESTRA_PREMIUM_FILE_COUNT` | `8` |
+| `BOB_ORCHESTRA_PREMIUM_RISK_FRAGMENTS` | `auth,oauth,login,security,secret,token,payment,billing,sandbox,docker` |
 | `BOB_ORCHESTRA_PREMIUM_CODEX_MODEL` | `gpt-5.5` |
 | `BOB_ORCHESTRA_PREMIUM_CODEX_EFFORT` | `xhigh` |
 | `BOB_ORCHESTRA_JUDGE_MODEL` | `claude-opus-4-7` |
+| `BOB_ORCHESTRA_MAX_ROUNDS` | `5` |
 | `BOB_VROOM_CLAUDE_MODEL` | `claude-sonnet-4-6` |
 | `BOB_VROOM_CODEX_MODEL` | `gpt-5.4` |
 | `BOB_VROOM_CODEX_EFFORT` | `low` |
@@ -176,7 +190,14 @@ BOB_DOCKER_IMAGE=python:3.10-slim   # fallback image
 BOB_DOCKER_CPUS=4
 BOB_DOCKER_MEMORY=8g
 BOB_DOCKER_NETWORK=bob-allowlist    # custom network for egress filtering
+BOB_DOCKER_EXTRA_ARGS='-v $HOME/.claude:/tmp/.claude:ro'
+BOB_DOCKER_FORWARD_ENV=EXTRA_TOKEN,OTHER_SETTING
 ```
+
+Docker automatically forwards Bob, Anthropic, OpenAI, and OTEL-related
+environment variables into the container. Use `BOB_DOCKER_FORWARD_ENV` for any
+additional comma-separated host env vars and `BOB_DOCKER_EXTRA_ARGS` for raw
+Docker flags such as extra read-only mounts.
 
 Copy `bob.dockerfile.example` to `bob.dockerfile` in your project root and customise for your language stack. The file is intentionally not committed; add it to `.gitignore`.
 
@@ -184,14 +205,18 @@ Copy `bob.dockerfile.example` to `bob.dockerfile` in your project root and custo
 
 ### YOLO mode
 
-`--yolo` is the single-flag opt-in for unattended overnight runs. It requires `--sandbox docker` (or `devcontainer`) and `--max-cost`. Effects:
+`--yolo` is the single-flag opt-in for unattended overnight runs. It requires
+`--sandbox docker` (or `devcontainer`) and `--max-cost`. The configured
+`--max-cost` is currently an advisory spend bound and an explicit autonomy
+signal; central hard budget enforcement is tracked as future budget-guard work.
+Effects:
 
 - Auto-approves the post-Duplo HITL gate if the meta-rubric passes.
 - Re-feeds `Inconclusive` McLoop results back into the loop (bounded by `BOB_YOLO_MAX_INCONCLUSIVE`, default 3).
 - Auto-approves Vroom triage for findings at or above `BOB_YOLO_VROOM_SEVERITY` (default `high`).
 
 ```bash
-# Cap spend at $20, run unattended in Docker
+# Configure a $20 advisory spend bound and run unattended in Docker
 bob run --inputs spec.md --yolo --sandbox docker --max-cost 20 --vroom
 ```
 
@@ -201,7 +226,8 @@ bob run --inputs spec.md --yolo --sandbox docker --max-cost 20 --vroom
 
 ### Cost tracking
 
-Every API call is appended to `.bob/costs.jsonl`. View aggregated breakdowns:
+API calls and Claude CLI-reported costs are appended to `.bob/costs.jsonl`.
+View aggregated breakdowns:
 
 ```bash
 bob costs --by phase      # where did the money go?
@@ -288,10 +314,14 @@ Bob ships four built-in verifiers, selected per-feature in the spec:
 | **M6** | YOLO mode with configurable thresholds and sandbox invariants. |
 | **M7** | Vroom audit daemon, SARIF coalescer, auditor pool (Claude + Codex + Semgrep). |
 | **M8** | Vroom fix-loop driver (isolated McLoop per finding), devcontainer sandbox (Tier 3), OpenTelemetry instrumentation. |
+| **M9** | Real-mode hardening across Docker, Vroom, cost context, and subprocess boundaries. |
+| **M10** | Deferred P2 fixes, Docker dogfood fixes, and Claude CLI cost ledger capture. |
+| **M11** | Typed run/Vroom wiring extraction, OpenAI effort configuration, premium review policy, locked `uv` dev environment, and boundary-contract tests. |
 
 ### Known gaps / deferred
 
 - `BOB_YOLO_NOTIFY` (email/Slack/desktop notification on YOLO completion) — not yet implemented.
+- Hard budget enforcement for `--max-cost` — currently advisory; planned as the next budget-guard layer.
 - Docker sandbox does not auto-mount `$HOME/.claude` for claude auth inside the container; see the note in `bob.dockerfile.example`.
 - `bob run --inputs <directory>` (multimodal Duplo from a folder of images/docs) is wired but the vision extraction path depends on `BOB_USE_STUB_DUPLO=0` and a configured `BOB_DUPLO_MODEL`.
 

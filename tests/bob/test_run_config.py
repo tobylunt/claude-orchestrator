@@ -129,6 +129,25 @@ def test_run_config_from_args_passes_through_operational_flags(tmp_path: Path):
     assert cfg.otel_endpoint == "http://localhost:6006/v1/traces"
 
 
+def test_run_config_from_args_uses_otel_env_when_cli_absent(tmp_path: Path):
+    cfg = RunConfig.from_args(
+        _make_args(tmp_path),
+        env={"OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:6006/v1/traces"},
+    )
+    assert cfg.otel_endpoint == "http://localhost:6006/v1/traces"
+
+
+def test_run_config_from_args_otel_cli_overrides_env(tmp_path: Path):
+    cfg = RunConfig.from_args(
+        _make_args(
+            tmp_path,
+            otel_endpoint="http://localhost:4318/v1/traces",
+        ),
+        env={"OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:6006/v1/traces"},
+    )
+    assert cfg.otel_endpoint == "http://localhost:4318/v1/traces"
+
+
 def test_run_config_is_frozen(tmp_path: Path):
     cfg = RunConfig.from_args(_make_args(tmp_path), env={})
     with pytest.raises(Exception):
