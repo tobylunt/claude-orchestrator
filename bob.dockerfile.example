@@ -8,12 +8,15 @@
 #   3. git (for worktree operations)
 #   4. Whatever language toolchain your project uses
 #
-# IMPORTANT: claude inside the container needs access to your Anthropic auth.
-# DockerExecutor forwards ANTHROPIC_API_KEY / OPENAI_API_KEY from the host
-# environment automatically (M9). If you sign in via `claude` CLI sessions
-# rather than API keys, mount your config instead:
+# IMPORTANT: claude inside the container needs access to Anthropic auth. API
+# keys are the least fragile path: DockerExecutor forwards ANTHROPIC_API_KEY /
+# OPENAI_API_KEY from the host environment automatically. If you sign in via
+# `claude` CLI sessions instead, mount your config at the container HOME.
+# DockerExecutor sets HOME=/tmp by default unless you override it:
 #
-#   BOB_DOCKER_EXTRA_ARGS='-v $HOME/.claude:/root/.claude:ro' bob run ...
+#   BOB_DOCKER_EXTRA_ARGS='-v $HOME/.claude:/tmp/.claude:ro' bob run ...
+#
+# If the CLI needs to refresh credentials, use a writable mount instead of :ro.
 
 FROM python:3.10-slim
 
