@@ -307,18 +307,22 @@ Bob ships four built-in verifiers, selected per-feature in the spec:
 ## Development
 
 ```bash
-# Install with dev and M2 extras
-pip install -e ".[m2,dev]"
+# Create a locked local dev environment
+uv sync --locked --extra dev --extra m2
 
 # Run the full test suite
-pytest -q
+uv run --locked --extra dev --extra m2 pytest -q
 
 # Run only Bob's own tests
-pytest tests/bob/ -q
+uv run --locked --extra dev --extra m2 pytest tests/bob/ -q
 
 # Run without API keys (stub mode)
-BOB_USE_STUB_ORCHESTRA=1 BOB_USE_STUB_VROOM=1 BOB_USE_STUB_DUPLO=1 pytest tests/bob/ -q
+BOB_USE_STUB_ORCHESTRA=1 BOB_USE_STUB_VROOM=1 BOB_USE_STUB_DUPLO=1 uv run --locked --extra dev --extra m2 pytest tests/bob/ -q
 ```
+
+The committed `uv.lock` is the reproducible local/CI environment. Keep
+`pyproject.toml` dependency ranges broad for package consumers, and refresh the
+lockfile with `uv lock` when changing dependencies.
 
 ### Contributing pattern
 
