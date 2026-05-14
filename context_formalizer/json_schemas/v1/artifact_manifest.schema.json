@@ -1,0 +1,30 @@
+{
+  "additionalProperties": false,
+  "description": "Describes the set of artifact files produced by a render run.\n\n``files`` maps a logical artifact name (e.g. ``\"claims_jsonl\"``,\n``\"org_context_md\"``) to a relative path under the output directory.",
+  "properties": {
+    "files": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "minProperties": 1,
+      "title": "Files",
+      "type": "object"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "title": "Generated At",
+      "type": "string"
+    },
+    "schema_version": {
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "generated_at",
+    "files"
+  ],
+  "title": "ArtifactManifest",
+  "type": "object"
+}

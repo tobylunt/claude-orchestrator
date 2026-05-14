@@ -15,10 +15,12 @@ be detected and handled deterministically.
 from __future__ import annotations
 
 import hashlib
+import json
 import unicodedata
 from collections.abc import Iterable, Iterator
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import TextIO
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -224,3 +226,59 @@ def load_claims(fp: TextIO) -> Iterator[Claim]:
         if not line:
             continue
         yield loads_claim(line)
+
+
+JSON_SCHEMAS_DIR = Path(__file__).resolve().parent / "json_schemas" / "v1"
+"""Directory holding committed JSON Schema golden files for SCHEMA_VERSION 1.x.
+
+Bump the ``v<major>`` segment alongside the major part of ``SCHEMA_VERSION``.
+"""
+
+EXPORTED_MODELS: dict[str, type[BaseModel]] = {
+    "claim": Claim,
+    "source_reference": SourceReference,
+    "artifact_manifest": ArtifactManifest,
+}
+"""Maps the golden-file stem (``<name>.schema.json``) to the model class it
+describes. Used by :func:`export_json_schema` and :func:`write_json_schemas`."""
+
+
+def export_json_schema(model: type[BaseModel]) -> str:
+    """Canonical JSON Schema export for ``model``.
+
+    Output is sorted by key and indented 2 spaces with a trailing newline. The
+    sort makes the byte sequence stable across Pydantic releases that may
+    reorder keys internally; the trailing newline keeps the file POSIX-clean.
+    """
+    schema = model.model_json_schema()
+    return json.dumps(schema, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+
+
+def write_json_schemas(out_dir: Path | None = None) -> dict[str, Path]:
+    """(Re)generate all golden JSON Schema files. Returns name → path written.
+
+    The maintenance entry point. Run via ``python -m context_formalizer.schemas``
+    (or in a test) when a schema model changes and the goldens need refreshing.
+    """
+    target = out_dir if out_dir is not None else JSON_SCHEMAS_DIR
+    target.mkdir(parents=True, exist_ok=True)
+    written: dict[str, Path] = {}
+    for name, model in EXPORTED_MODELS.items():
+        path = target / f"{name}.schema.json"
+        path.write_text(export_json_schema(model), encoding="utf-8")
+        written[name] = path
+    return written
+
+
+def load_json_schema(name: str) -> dict[str, object]:
+    """Load a committed JSON Schema by its registry name (e.g. ``"claim"``).
+
+    Returns the parsed schema as a dict ready to hand to ``jsonschema``.
+    """
+    path = JSON_SCHEMAS_DIR / f"{name}.schema.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+if __name__ == "__main__":  # pragma: no cover - maintenance entry point
+    for n, p in write_json_schemas().items():
+        print(f"wrote {n} -> {p}")
