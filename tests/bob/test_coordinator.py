@@ -213,6 +213,73 @@ def test_coordinator_marks_feature_failed_on_mcloop_halt(project_root: Path):
     assert worktree_path.exists(), "failed-feature worktree should remain for inspection"
 
 
+def test_coordinator_halts_run_after_orchestra_reject(project_root: Path):
+    spec = _spec_with_features("a", "b")
+
+    duplo = MagicMock(return_value=spec)
+    mcloop = MagicMock(return_value=McLoopResult(
+        outcome="exit_signal", iterations=1, last_reason="ok", last_status="ok",
+    ))
+    orchestra = MagicMock(return_value=Verdict(
+        feature_id=1, decision="reject", confidence=0.7,
+        debate_log_path=project_root / ".bob" / "features" / "001-a" / "debate.json",
+        judge_reasoning="schema_version must be required",
+    ))
+    gates = GateRegistry(disabled={"post_duplo"})
+
+    coord = Coordinator(
+        project_root=project_root, duplo=duplo, mcloop=mcloop,
+        orchestra=orchestra, gates=gates, verbose=False,
+    )
+    coord.run(RunScope(includes_duplo=True))
+
+    assert mcloop.call_count == 1
+    assert orchestra.call_count == 1
+
+    bob_dir = project_root / ".bob"
+    feature1 = read_json(bob_dir / "features" / "001-a" / "state.json")
+    feature2 = read_json(bob_dir / "features" / "002-b" / "state.json")
+    assert feature1["status"] == "rejected"
+    assert feature2["status"] == "pending"
+
+    events = list(read_jsonl(bob_dir / "run-log.jsonl"))
+    event_types = [e["event"] for e in events]
+    assert "feature_rejected" in event_types
+    assert "run_finished" not in event_types
+    aborted = [e for e in events if e["event"] == "run_aborted"]
+    assert aborted[-1]["reason"] == "feature_rejected"
+    assert aborted[-1]["feature_id"] == 1
+
+
+def test_coordinator_records_orchestra_rejection_for_retry_context(project_root: Path):
+    spec = _spec_with_features("a")
+
+    duplo = MagicMock(return_value=spec)
+    mcloop = MagicMock(return_value=McLoopResult(
+        outcome="exit_signal", iterations=1, last_reason="ok", last_status="ok",
+    ))
+    orchestra = MagicMock(return_value=Verdict(
+        feature_id=1, decision="reject", confidence=0.42,
+        debate_log_path=project_root / ".bob" / "features" / "001-a" / "debate.json",
+        judge_reasoning="ArtifactManifest must require canonical files.",
+    ))
+    gates = GateRegistry(disabled={"post_duplo"})
+
+    coord = Coordinator(
+        project_root=project_root, duplo=duplo, mcloop=mcloop,
+        orchestra=orchestra, gates=gates, verbose=False,
+    )
+    coord.run(RunScope(includes_duplo=True))
+
+    failed_attempts = (
+        project_root / ".bob" / "features" / "001-a" / "failed_attempts.md"
+    ).read_text()
+    assert "## Orchestra rejection" in failed_attempts
+    assert "- decision: reject" in failed_attempts
+    assert "- confidence: 0.42" in failed_attempts
+    assert "ArtifactManifest must require canonical files." in failed_attempts
+
+
 def test_coordinator_creates_and_removes_worktree(project_root: Path):
     """When merge succeeds, Coordinator creates the worktree before McLoop and removes it after merge."""
     spec = _spec_with_features("a")
