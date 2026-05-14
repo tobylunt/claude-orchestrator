@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from claude_orchestrator.bob.duplo.multimodal import _SPEC_PROMPT
 from claude_orchestrator.bob.duplo.real import RealDuplo
 from claude_orchestrator.models import InputRef, Spec, Feature, FeatureStatus, TaskType, VerificationPlan
 
@@ -55,3 +56,18 @@ def test_real_duplo_collects_files_from_directory(tmp_path: Path):
     spec = duplo.elicit_from_directory(tmp_path)
     assert fake.calls == 1
     assert spec.title == "T"
+
+
+def test_duplo_prompt_includes_spec_quality_rules():
+    """Duplo should avoid self-contradictory specs before McLoop sees them."""
+    prompt = _SPEC_PROMPT.lower()
+
+    assert "internal consistency" in prompt
+    assert "success_criteria" in prompt
+    assert "deterministic" in prompt
+    assert "byte-identical" in prompt
+    assert "append-only" in prompt
+    assert "stable sorting" in prompt
+    assert "atomic replace" in prompt
+    assert "human approval gate" in prompt
+    assert "provenance" in prompt
