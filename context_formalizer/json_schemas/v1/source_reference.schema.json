@@ -1,0 +1,144 @@
+{
+  "$defs": {
+    "Provider": {
+      "description": "Where a SourceReference came from.\n\nThe MVP emits only :attr:`LOCAL_FILES`. Other variants exist so the same\nClaim/SourceReference records can later represent git, GitHub, Google Drive,\nNotion, and other org systems without a schema rewrite.",
+      "enum": [
+        "local_files",
+        "git_history",
+        "github",
+        "gdrive",
+        "notion",
+        "other"
+      ],
+      "title": "Provider",
+      "type": "string"
+    }
+  },
+  "$id": "urn:context-formalizer:schemas:v1:source_reference",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A provider-aware pointer back to the evidence behind a Claim.\n\n``uri`` is the canonical locator within the provider's namespace:\n  - ``local_files``: a normalized relative path (or ``file://`` URI) under\n    the crawl root. No top-level \"path\" field — keep everything in ``uri``\n    so non-file providers don't need a special case.\n  - ``git_history``: a path within the repo; ``revision`` carries the\n    commit sha.\n  - ``github``/``gdrive``/``notion``: provider-native URLs or IDs.\n\nSpan fields are all optional because different providers expose different\naddressing granularity (line spans for code, page for PDFs, block for\nNotion).",
+  "properties": {
+    "block": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Block"
+    },
+    "end_char": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "End Char"
+    },
+    "end_line": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "End Line"
+    },
+    "observed_at": {
+      "format": "date-time",
+      "title": "Observed At",
+      "type": "string"
+    },
+    "page": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Page"
+    },
+    "provider": {
+      "$ref": "#/$defs/Provider"
+    },
+    "revision": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Revision"
+    },
+    "schema_version": {
+      "minLength": 1,
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source_id": {
+      "minLength": 1,
+      "title": "Source Id",
+      "type": "string"
+    },
+    "start_char": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Start Char"
+    },
+    "start_line": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Start Line"
+    },
+    "uri": {
+      "minLength": 1,
+      "title": "Uri",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "source_id",
+    "provider",
+    "uri",
+    "observed_at"
+  ],
+  "title": "SourceReference",
+  "type": "object"
+}
