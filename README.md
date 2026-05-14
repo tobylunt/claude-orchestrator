@@ -336,8 +336,12 @@ Bob ships four built-in verifiers, selected per-feature in the spec:
 
 - `BOB_YOLO_NOTIFY` (email/Slack/desktop notification on YOLO completion) — not yet implemented.
 - Hard budget enforcement for `--max-cost` — currently advisory; planned as the next budget-guard layer.
+- `claude -p` model selection is not yet wired through to the actual Claude CLI invocation; `BOB_MCLOOP_MODEL` should become an execution setting, not only a cost-label convention.
+- Orchestra/debate-agent JSON parsing should accept fenced JSON replies instead of treating otherwise valid responses as abstentions.
 - Docker sandbox does not auto-mount `$HOME/.claude` for claude auth inside the container; see the note in `bob.dockerfile.example`.
 - `bob run --inputs <directory>` (multimodal Duplo from a folder of images/docs) is wired but the vision extraction path depends on `BOB_USE_STUB_DUPLO=0` and a configured `BOB_DUPLO_MODEL`.
+- Tmux/PTY interactive-session execution is out of scope for the current roadmap; useful learnings from those workflows are folded into hook policy, project memory, and observability instead.
+- Terminal observability (`bob sessions` / dashboard view over runs, workers, costs, hooks, verifier results, and transcripts) is a secondary roadmap objective; durable `.bob/` state remains the source of truth.
 
 ### Agent control surfaces
 
@@ -350,6 +354,7 @@ Bob ships four built-in verifiers, selected per-feature in the spec:
 ## Spec and design docs
 
 - **Primary design spec:** `docs/superpowers/specs/2026-05-06-bob-design.md` — covers the full architecture, phase contracts, verifier protocol, HITL gate design, YOLO invariants, and the Orchestra stability criterion.
+- **Architecture roadmap:** `docs/superpowers/plans/2026-05-11-bob-architecture-roadmap.md` — records the audit-driven implementation plan, including budget guard, execution backend abstraction, hook policy memory, and terminal observability.
 - **Related work:** The Maestro appendix in the same doc surveys comparable orchestration systems.
 
 ---

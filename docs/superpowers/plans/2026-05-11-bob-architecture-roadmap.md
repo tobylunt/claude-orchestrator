@@ -74,6 +74,52 @@ Target shape:
 - Explicit fail-loud behavior when a required value is absent.
 - Structured parsers for stream-json and JSONL, with malformed data surfaced rather than silently ignored.
 
+## May 2026 Agent SDK / Hook-Orchestration Learnings
+
+Anthropic's June 15, 2026 Agent SDK credit change makes `claude -p` and Agent
+SDK usage a separate monthly-credit surface, while interactive Claude Code
+continues to use subscription limits. The official guidance also says API-key
+usage remains pay-as-you-go and that teams running shared production automation
+should use the Claude Developer Platform for predictable billing:
+https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan
+
+Community workarounds based on long-lived interactive Claude Code sessions,
+tmux, and hook-driven orchestration are useful architecture signals, but Bob
+should not treat them as a billing-evasion strategy or add a tmux/PTY backend
+to blur the line between interactive and programmatic usage. The useful lessons
+belong in Bob's hook policy, Coordinator state machine, and observability
+surface, not in an alternate execution mode.
+
+What is worth adopting:
+
+- A conductor process maps naturally to Bob's Coordinator, but the coordinator
+  must remain the source of truth for state transitions, budgets, gates, and
+  merge decisions.
+- Tool lifecycle hooks are a high-leverage boundary:
+  - `SessionStart`: inject role/project context and allowed commands.
+  - `PreToolUse`: block dangerous commands and warn on project-specific
+    anti-patterns.
+  - `PostToolUse`: redact secrets/PII and summarize side effects.
+  - `Stop`: emit a structured agent-done event for the Coordinator.
+  - `SessionEnd`: persist summary, token/cost usage, accepted/rejected output,
+    and follow-up actions.
+- Project-local pattern memory is valuable. If an agent repeatedly misses a
+  repo convention or reimplements a central helper, Bob should learn that as a
+  policy warning or block, not rely on the human to rediscover it each time.
+- Terminal/dashboard observability is useful as an operator surface, but it is
+  secondary to durable state, structured logs, redaction, and reproducible
+  verifier outcomes.
+
+Implementation guardrails:
+
+- Keep the current `claude -p` backend as the default execution path until
+  budget enforcement, redaction, and parser robustness are in place.
+- Add explicit model selection for `claude -p` before broader backend work,
+  because cost control should not depend on provider defaults.
+- Keep hook policy and terminal observability independent of any specific
+  provider surface so they apply equally to CLI, API, Docker, and Vroom paths.
+- Do not add a tmux/PTY interactive-session backend to this roadmap.
+
 ## Recommended Roadmap
 
 ### M11 - Make wiring explicit
@@ -107,6 +153,48 @@ Target shape:
 - [ ] Dogfood resume: interrupt mid-run, restart, and verify correct continuation.
 - [ ] Record exact commands, cost, run IDs, and outcomes in a validation note.
 
+### M15 - Execution backend abstraction
+
+- [ ] Add an `ExecutionBackend` protocol under McLoop with an initial
+  `PrintCliBackend` implementation that wraps the current `claude -p` path.
+- [ ] Wire `BOB_MCLOOP_MODEL` into the actual Claude CLI invocation using
+  `claude -p --model <model>`, and record the requested model separately from
+  any provider-reported cost.
+- [ ] Add tests proving backend env, cwd, timeout, sandbox, model, and shutdown
+  semantics reach the subprocess.
+- [ ] Fix Orchestra/debate-agent JSON parsing so fenced JSON replies are parsed
+  as JSON rather than counted as abstentions.
+- [ ] Keep the backend selection explicit and documented; no automatic switch
+  based on detected Claude auth mode.
+
+### M16 - Hook policy and project memory
+
+- [ ] Promote hook lifecycle events into a documented Bob policy surface:
+  `SessionStart`, `PreToolUse`, `PostToolUse`, `Stop`, and `SessionEnd`.
+- [ ] Add a project-local policy memory file for repo-specific warnings,
+  blocked command patterns, and "do not repeat" implementation mistakes.
+- [ ] Log every hook decision in structured JSONL with enough context to audit
+  false positives and missed blocks.
+- [ ] Add redaction before any agent transcript, tool output, debate log, or
+  session summary is persisted under `.bob/`.
+- [ ] Add a recurring review command/report for policy memory entries so the
+  human can prune stale or over-broad rules.
+
+### M17 - Terminal observability surface
+
+- [ ] Add `bob sessions` to list active runs, feature worktrees, backend type,
+  current phase, current iteration, cost, last verifier result, and last hook
+  decision.
+- [ ] Add a terminal dashboard view that tails `.bob/run-log.jsonl`,
+  `costs.jsonl`, feature activity, verifier results, and session transcripts
+  without requiring users to know the file layout.
+- [ ] Provide read-only inspection of active worker output and logs while
+  preserving Coordinator ownership of control flow.
+- [ ] Surface "needs human" events prominently: HITL gates, budget halts,
+  inconclusive verifier results, policy blocks, and Orchestra disagreement.
+- [ ] Treat dashboards as observability only. They must not become a second
+  state store or the source of truth for run progress.
+
 ## Dogfooding Recommendation
 
 Use Bob to implement these improvements, but do it in small bounded specs. Bob is exactly the right tool for M11-M13 if each run is constrained to one architectural boundary.
@@ -118,6 +206,10 @@ Recommended order:
 3. Use Bob for M13 only after M11 is merged, because budget guard wiring crosses almost every expensive call path.
 4. Do not start with overnight YOLO. Use short supervised dogfood runs until M13 is in place.
 5. After M13, run the M14 real-mode validation campaign with conservative caps.
+6. Do M15 before broadening backend work. Model selection and fenced-JSON
+   parsing are cheaper and higher-confidence than adding another process-control mode.
+7. Do terminal observability after M16 so the dashboard can expose hook-policy
+   and redaction decisions instead of just raw subprocess output.
 
 Suggested first Bob spec:
 
@@ -159,6 +251,8 @@ Only move to Docker/YOLO dogfood after the wiring extraction is merged and the b
 
 - Do not replace file/git state with SQLite yet.
 - Do not introduce a scheduler, queue, or service daemon beyond the current Vroom process.
-- Do not broaden model/provider abstraction work unless it directly supports cost policy or wiring clarity.
+- Do not broaden model/provider abstraction work unless it directly supports cost policy, backend selection, or wiring clarity.
 - Do not expand verifier surface area until the wiring and state contracts are less brittle.
-
+- Do not implement tmux/PTY interactive-session execution in this roadmap. The
+  hook-policy and terminal-observability work should not become a shadow
+  automation channel.
