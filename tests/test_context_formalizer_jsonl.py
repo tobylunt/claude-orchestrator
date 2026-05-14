@@ -33,6 +33,7 @@ from context_formalizer.schemas import (
 
 def _ref_local() -> SourceReference:
     return SourceReference(
+        schema_version=SCHEMA_VERSION,
         source_id="src-local-1",
         provider=Provider.LOCAL_FILES,
         uri="docs/decisions/0001-use-postgres.md",
@@ -46,6 +47,7 @@ def _ref_local() -> SourceReference:
 
 def _ref_git() -> SourceReference:
     return SourceReference(
+        schema_version=SCHEMA_VERSION,
         source_id="src-git-1",
         provider=Provider.GIT_HISTORY,
         uri="src/billing/charge.py",
@@ -58,6 +60,7 @@ def _ref_git() -> SourceReference:
 
 def _ref_notion() -> SourceReference:
     return SourceReference(
+        schema_version=SCHEMA_VERSION,
         source_id="src-notion-1",
         provider=Provider.NOTION,
         uri="notion://page/abc",
@@ -68,6 +71,7 @@ def _ref_notion() -> SourceReference:
 
 def _full_claim() -> Claim:
     return Claim(
+        schema_version=SCHEMA_VERSION,
         id="clm_full",
         text="Postgres is the system of record for billing.",
         source_references=[_ref_local(), _ref_git(), _ref_notion()],
@@ -82,10 +86,12 @@ def _full_claim() -> Claim:
 
 def _minimal_claim() -> Claim:
     return Claim(
+        schema_version=SCHEMA_VERSION,
         id="clm_minimal",
         text="The platform team owns the API gateway.",
         source_references=[
             SourceReference(
+                schema_version=SCHEMA_VERSION,
                 source_id="src-min",
                 provider=Provider.LOCAL_FILES,
                 uri="OWNERS.md",

@@ -23,7 +23,10 @@ import pytest
 
 from context_formalizer.schemas import (
     EXPORTED_MODELS,
+    JSON_SCHEMA_DIALECT,
     JSON_SCHEMAS_DIR,
+    SCHEMA_MAJOR,
+    SCHEMA_VERSION,
     ArtifactManifest,
     Claim,
     Provider,
@@ -37,6 +40,7 @@ from context_formalizer.schemas import (
 
 def _local_ref() -> SourceReference:
     return SourceReference(
+        schema_version=SCHEMA_VERSION,
         source_id="src-1",
         provider=Provider.LOCAL_FILES,
         uri="docs/decisions/0001-use-postgres.md",
@@ -48,6 +52,7 @@ def _local_ref() -> SourceReference:
 
 def _claim() -> Claim:
     return Claim(
+        schema_version=SCHEMA_VERSION,
         id="claim-1",
         text="Postgres is the system of record for billing.",
         source_references=[_local_ref()],
@@ -58,19 +63,30 @@ def _claim() -> Claim:
     )
 
 
+def _canonical_files() -> dict[str, str]:
+    return {
+        "claims_jsonl": "claims.jsonl",
+        "org_context_md": "ORG_CONTEXT.md",
+        "systems_md": "SYSTEMS.md",
+        "decisions_md": "DECISIONS.md",
+        "owners_md": "OWNERS.md",
+        "glossary_md": "GLOSSARY.md",
+        "context_gaps_md": "CONTEXT_GAPS.md",
+        "ruledout_md": "RULEDOUT.md",
+    }
+
+
 def _manifest() -> ArtifactManifest:
     return ArtifactManifest(
+        schema_version=SCHEMA_VERSION,
         generated_at=datetime(2026, 5, 13, tzinfo=timezone.utc),
-        files={
-            "claims_jsonl": "claims.jsonl",
-            "org_context_md": "ORG_CONTEXT.md",
-        },
+        files=_canonical_files(),
     )
 
 
 class TestExportCanonicalForm:
     def test_export_is_sorted_indent_two_with_trailing_newline(self) -> None:
-        text = export_json_schema(Claim)
+        text = export_json_schema("claim", Claim)
         assert text.endswith("\n")
         parsed = json.loads(text)
         # Round-tripping with the same canonical formatting yields the same
@@ -90,15 +106,24 @@ class TestExportCanonicalForm:
     def test_export_is_deterministic_across_calls(self) -> None:
         # Same input, same bytes — required for the byte-for-byte golden test
         # to mean anything.
-        for model in EXPORTED_MODELS.values():
-            assert export_json_schema(model) == export_json_schema(model)
+        for name, model in EXPORTED_MODELS.items():
+            assert export_json_schema(name, model) == export_json_schema(name, model)
+
+    @pytest.mark.parametrize("name", sorted(EXPORTED_MODELS))
+    def test_export_includes_dialect_and_id(self, name: str) -> None:
+        # Consumers must be able to identify the dialect and the contract
+        # revision from the schema alone — addresses the Orchestra-rejection
+        # gap that goldens lacked $schema/$id metadata.
+        schema = json.loads(export_json_schema(name, EXPORTED_MODELS[name]))
+        assert schema["$schema"] == JSON_SCHEMA_DIALECT
+        assert schema["$id"] == f"urn:context-formalizer:schemas:v{SCHEMA_MAJOR}:{name}"
 
 
 class TestGoldenMatchesLive:
     @pytest.mark.parametrize("name", sorted(EXPORTED_MODELS))
     def test_export_matches_golden_byte_for_byte(self, name: str) -> None:
         model = EXPORTED_MODELS[name]
-        live = export_json_schema(model)
+        live = export_json_schema(name, model)
         golden_path = JSON_SCHEMAS_DIR / f"{name}.schema.json"
         assert golden_path.exists(), (
             f"missing golden {golden_path}. Regenerate with "
@@ -134,10 +159,12 @@ class TestFixturesValidateAgainstCommittedSchema:
     def test_claim_with_git_history_source_validates(self) -> None:
         schema = load_json_schema("claim")
         claim = Claim(
+            schema_version=SCHEMA_VERSION,
             id="claim-git-1",
             text="Charge logic was rewritten when we moved to idempotency keys.",
             source_references=[
                 SourceReference(
+                    schema_version=SCHEMA_VERSION,
                     source_id="git-abc123",
                     provider=Provider.GIT_HISTORY,
                     uri="src/billing/charge.py",
@@ -153,6 +180,28 @@ class TestFixturesValidateAgainstCommittedSchema:
             status=Status.VERIFIED,
         )
         jsonschema.validate(json.loads(claim.model_dump_json()), schema)
+
+    def test_missing_schema_version_fails_committed_schema(self) -> None:
+        # schema_version is required in the committed schema so consumers can
+        # dispatch migrations without guessing — addresses the Orchestra
+        # rejection that schema_version was default-only.
+        schema = load_json_schema("claim")
+        bad = json.loads(_claim().model_dump_json())
+        bad.pop("schema_version")
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(bad, schema)
+
+    def test_missing_canonical_artifact_fails_committed_manifest_schema(
+        self,
+    ) -> None:
+        # The canonical artifact set is required by the manifest schema —
+        # addresses the Orchestra rejection that files was an unconstrained
+        # string-to-string map.
+        schema = load_json_schema("artifact_manifest")
+        bad = json.loads(_manifest().model_dump_json())
+        del bad["files"]["ruledout_md"]
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(bad, schema)
 
     def test_invalid_payload_fails_committed_schema(self) -> None:
         # Confidence > 1 must be rejected by the committed schema too, not

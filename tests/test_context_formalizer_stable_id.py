@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 
 from context_formalizer.schemas import (
     CLAIM_ID_PREFIX,
+    SCHEMA_VERSION,
     Provider,
     SourceReference,
     stable_claim_id,
@@ -27,6 +28,7 @@ from context_formalizer.schemas import (
 
 def _ref(**overrides: object) -> SourceReference:
     base: dict[str, object] = {
+        "schema_version": SCHEMA_VERSION,
         "source_id": "src-1",
         "provider": Provider.LOCAL_FILES,
         "uri": "docs/decisions/0001-use-postgres.md",
@@ -59,9 +61,10 @@ class TestStableClaimId:
             """
             from datetime import datetime, timezone
             from context_formalizer.schemas import (
-                Provider, SourceReference, stable_claim_id,
+                SCHEMA_VERSION, Provider, SourceReference, stable_claim_id,
             )
             ref = SourceReference(
+                schema_version=SCHEMA_VERSION,
                 source_id="src-1",
                 provider=Provider.LOCAL_FILES,
                 uri="docs/decisions/0001-use-postgres.md",
@@ -145,6 +148,7 @@ class TestStableClaimId:
         page = stable_claim_id(
             "X",
             SourceReference(
+                schema_version=SCHEMA_VERSION,
                 source_id="s",
                 provider=Provider.GDRIVE,
                 uri="x",
@@ -155,6 +159,7 @@ class TestStableClaimId:
         line = stable_claim_id(
             "X",
             SourceReference(
+                schema_version=SCHEMA_VERSION,
                 source_id="s",
                 provider=Provider.GDRIVE,
                 uri="x",

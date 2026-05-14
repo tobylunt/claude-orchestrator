@@ -28,6 +28,24 @@ from pydantic import BaseModel, ConfigDict, Field
 SCHEMA_VERSION = "1.0.0"
 """Semver string stamped on every record. Bump on incompatible field changes."""
 
+SCHEMA_MAJOR = SCHEMA_VERSION.split(".", 1)[0]
+"""Major component of :data:`SCHEMA_VERSION`. Used in the ``v<major>`` segment
+of golden-file paths and in JSON Schema ``$id`` URNs so version drift is
+discoverable from the schema alone."""
+
+JSON_SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
+"""JSON Schema dialect we emit. Pydantic v2 generates Draft 2020-12 output."""
+
+
+def _schema_id(name: str) -> str:
+    """Canonical ``$id`` URN for an exported schema.
+
+    Embeds the major version so a consumer reading the schema alone can tell
+    which contract revision it's looking at; sibling URNs (``...:v2:...``) can
+    coexist after a breaking change.
+    """
+    return f"urn:context-formalizer:schemas:v{SCHEMA_MAJOR}:{name}"
+
 
 class Provider(str, Enum):
     """Where a SourceReference came from.
@@ -74,7 +92,7 @@ class SourceReference(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: str = SCHEMA_VERSION
+    schema_version: str = Field(min_length=1)
     source_id: str = Field(min_length=1)
     provider: Provider
     uri: str = Field(min_length=1)
@@ -104,7 +122,7 @@ class Claim(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: str = SCHEMA_VERSION
+    schema_version: str = Field(min_length=1)
     id: str = Field(min_length=1)
     text: str = Field(min_length=1)
     source_references: list[SourceReference] = Field(min_length=1)
@@ -116,18 +134,48 @@ class Claim(BaseModel):
     related_owners: list[str] = Field(default_factory=list)
 
 
-class ArtifactManifest(BaseModel):
-    """Describes the set of artifact files produced by a render run.
+class ArtifactFiles(BaseModel):
+    """The canonical set of artifact files a render run must produce.
 
-    ``files`` maps a logical artifact name (e.g. ``"claims_jsonl"``,
-    ``"org_context_md"``) to a relative path under the output directory.
+    Each field maps a canonical artifact to its path under the output
+    directory. Every field is required — a downstream consumer reading just
+    the manifest can therefore tell whether the full set was emitted without
+    consulting code. Filenames in the docstrings match the master spec; only
+    the paths (values) are caller-controlled.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: str = SCHEMA_VERSION
+    claims_jsonl: str = Field(min_length=1)
+    """Path to ``claims.jsonl``."""
+    org_context_md: str = Field(min_length=1)
+    """Path to ``ORG_CONTEXT.md``."""
+    systems_md: str = Field(min_length=1)
+    """Path to ``SYSTEMS.md``."""
+    decisions_md: str = Field(min_length=1)
+    """Path to ``DECISIONS.md``."""
+    owners_md: str = Field(min_length=1)
+    """Path to ``OWNERS.md``."""
+    glossary_md: str = Field(min_length=1)
+    """Path to ``GLOSSARY.md``."""
+    context_gaps_md: str = Field(min_length=1)
+    """Path to ``CONTEXT_GAPS.md``."""
+    ruledout_md: str = Field(min_length=1)
+    """Path to ``RULEDOUT.md``."""
+
+
+class ArtifactManifest(BaseModel):
+    """Describes the set of artifact files produced by a render run.
+
+    ``files`` is an :class:`ArtifactFiles` value (not an open string-to-string
+    map) so the canonical artifact set is required by the schema itself.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: str = Field(min_length=1)
     generated_at: datetime
-    files: dict[str, str] = Field(min_length=1)
+    files: ArtifactFiles
 
 
 CLAIM_ID_PREFIX = "clm_"
@@ -243,14 +291,20 @@ EXPORTED_MODELS: dict[str, type[BaseModel]] = {
 describes. Used by :func:`export_json_schema` and :func:`write_json_schemas`."""
 
 
-def export_json_schema(model: type[BaseModel]) -> str:
-    """Canonical JSON Schema export for ``model``.
+def export_json_schema(name: str, model: type[BaseModel]) -> str:
+    """Canonical JSON Schema export for ``model`` under registry name ``name``.
+
+    Injects the standard ``$schema`` (dialect) and ``$id`` (a versioned URN)
+    keys at the root so consumers can identify the dialect and the exact
+    contract revision from the schema alone.
 
     Output is sorted by key and indented 2 spaces with a trailing newline. The
     sort makes the byte sequence stable across Pydantic releases that may
     reorder keys internally; the trailing newline keeps the file POSIX-clean.
     """
     schema = model.model_json_schema()
+    schema["$schema"] = JSON_SCHEMA_DIALECT
+    schema["$id"] = _schema_id(name)
     return json.dumps(schema, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
 
 
@@ -265,7 +319,7 @@ def write_json_schemas(out_dir: Path | None = None) -> dict[str, Path]:
     written: dict[str, Path] = {}
     for name, model in EXPORTED_MODELS.items():
         path = target / f"{name}.schema.json"
-        path.write_text(export_json_schema(model), encoding="utf-8")
+        path.write_text(export_json_schema(name, model), encoding="utf-8")
         written[name] = path
     return written
 

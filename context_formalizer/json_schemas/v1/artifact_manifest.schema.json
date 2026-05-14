@@ -1,14 +1,71 @@
 {
+  "$defs": {
+    "ArtifactFiles": {
+      "additionalProperties": false,
+      "description": "The canonical set of artifact files a render run must produce.\n\nEach field maps a canonical artifact to its path under the output\ndirectory. Every field is required — a downstream consumer reading just\nthe manifest can therefore tell whether the full set was emitted without\nconsulting code. Filenames in the docstrings match the master spec; only\nthe paths (values) are caller-controlled.",
+      "properties": {
+        "claims_jsonl": {
+          "minLength": 1,
+          "title": "Claims Jsonl",
+          "type": "string"
+        },
+        "context_gaps_md": {
+          "minLength": 1,
+          "title": "Context Gaps Md",
+          "type": "string"
+        },
+        "decisions_md": {
+          "minLength": 1,
+          "title": "Decisions Md",
+          "type": "string"
+        },
+        "glossary_md": {
+          "minLength": 1,
+          "title": "Glossary Md",
+          "type": "string"
+        },
+        "org_context_md": {
+          "minLength": 1,
+          "title": "Org Context Md",
+          "type": "string"
+        },
+        "owners_md": {
+          "minLength": 1,
+          "title": "Owners Md",
+          "type": "string"
+        },
+        "ruledout_md": {
+          "minLength": 1,
+          "title": "Ruledout Md",
+          "type": "string"
+        },
+        "systems_md": {
+          "minLength": 1,
+          "title": "Systems Md",
+          "type": "string"
+        }
+      },
+      "required": [
+        "claims_jsonl",
+        "org_context_md",
+        "systems_md",
+        "decisions_md",
+        "owners_md",
+        "glossary_md",
+        "context_gaps_md",
+        "ruledout_md"
+      ],
+      "title": "ArtifactFiles",
+      "type": "object"
+    }
+  },
+  "$id": "urn:context-formalizer:schemas:v1:artifact_manifest",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Describes the set of artifact files produced by a render run.\n\n``files`` maps a logical artifact name (e.g. ``\"claims_jsonl\"``,\n``\"org_context_md\"``) to a relative path under the output directory.",
+  "description": "Describes the set of artifact files produced by a render run.\n\n``files`` is an :class:`ArtifactFiles` value (not an open string-to-string\nmap) so the canonical artifact set is required by the schema itself.",
   "properties": {
     "files": {
-      "additionalProperties": {
-        "type": "string"
-      },
-      "minProperties": 1,
-      "title": "Files",
-      "type": "object"
+      "$ref": "#/$defs/ArtifactFiles"
     },
     "generated_at": {
       "format": "date-time",
@@ -16,12 +73,13 @@
       "type": "string"
     },
     "schema_version": {
-      "default": "1.0.0",
+      "minLength": 1,
       "title": "Schema Version",
       "type": "string"
     }
   },
   "required": [
+    "schema_version",
     "generated_at",
     "files"
   ],

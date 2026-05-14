@@ -32,6 +32,7 @@ from context_formalizer.schemas import (
 
 def _local_source_ref(**overrides: object) -> SourceReference:
     base: dict[str, object] = {
+        "schema_version": SCHEMA_VERSION,
         "source_id": "src-1",
         "provider": Provider.LOCAL_FILES,
         "uri": "docs/decisions/0001-use-postgres.md",
@@ -45,6 +46,7 @@ def _local_source_ref(**overrides: object) -> SourceReference:
 
 def _claim(**overrides: object) -> Claim:
     base: dict[str, object] = {
+        "schema_version": SCHEMA_VERSION,
         "id": "claim-1",
         "text": "Postgres is the system of record for billing.",
         "source_references": [_local_source_ref()],
@@ -55,6 +57,21 @@ def _claim(**overrides: object) -> Claim:
     }
     base.update(overrides)
     return Claim(**base)
+
+
+def _canonical_files(**overrides: str) -> dict[str, str]:
+    base = {
+        "claims_jsonl": "claims.jsonl",
+        "org_context_md": "ORG_CONTEXT.md",
+        "systems_md": "SYSTEMS.md",
+        "decisions_md": "DECISIONS.md",
+        "owners_md": "OWNERS.md",
+        "glossary_md": "GLOSSARY.md",
+        "context_gaps_md": "CONTEXT_GAPS.md",
+        "ruledout_md": "RULEDOUT.md",
+    }
+    base.update(overrides)
+    return base
 
 
 class TestSourceReference:
@@ -68,6 +85,7 @@ class TestSourceReference:
         # Git history ingestion is deferred, but the schema must already
         # represent it: provider=git_history + commit sha in revision.
         ref = SourceReference(
+            schema_version=SCHEMA_VERSION,
             source_id="git-abc123",
             provider=Provider.GIT_HISTORY,
             uri="src/billing/charge.py",
@@ -81,6 +99,7 @@ class TestSourceReference:
 
     def test_pdf_span_uses_page(self) -> None:
         ref = SourceReference(
+            schema_version=SCHEMA_VERSION,
             source_id="gd-1",
             provider=Provider.GDRIVE,
             uri="https://drive.google.com/file/d/abc",
@@ -92,6 +111,7 @@ class TestSourceReference:
 
     def test_notion_span_uses_block(self) -> None:
         ref = SourceReference(
+            schema_version=SCHEMA_VERSION,
             source_id="nt-1",
             provider=Provider.NOTION,
             uri="notion://page/abc",
@@ -103,6 +123,7 @@ class TestSourceReference:
     def test_unknown_provider_rejected(self) -> None:
         with pytest.raises(ValidationError):
             SourceReference(
+                schema_version=SCHEMA_VERSION,
                 source_id="s",
                 provider="slack",  # type: ignore[arg-type]
                 uri="x",
@@ -112,17 +133,31 @@ class TestSourceReference:
     def test_empty_uri_rejected(self) -> None:
         with pytest.raises(ValidationError):
             SourceReference(
+                schema_version=SCHEMA_VERSION,
                 source_id="s",
                 provider=Provider.LOCAL_FILES,
                 uri="",
                 observed_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
             )
 
+    def test_schema_version_required(self) -> None:
+        # schema_version must be present on every record so downstream
+        # consumers can dispatch migrations without guessing.
+        with pytest.raises(ValidationError) as exc:
+            SourceReference(
+                source_id="s",
+                provider=Provider.LOCAL_FILES,
+                uri="x",
+                observed_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            )
+        assert "schema_version" in str(exc.value)
+
     def test_extra_fields_rejected(self) -> None:
         # The MVP forbids extra fields so accidental drift surfaces as a
         # validation error rather than silently lost data.
         with pytest.raises(ValidationError):
             SourceReference(
+                schema_version=SCHEMA_VERSION,
                 source_id="s",
                 provider=Provider.LOCAL_FILES,
                 uri="x",
@@ -138,6 +173,19 @@ class TestClaim:
         assert c.confidence == 0.9
         assert c.schema_version == SCHEMA_VERSION
         assert len(c.source_references) == 1
+
+    def test_schema_version_required(self) -> None:
+        with pytest.raises(ValidationError) as exc:
+            Claim(
+                id="claim-1",
+                text="x",
+                source_references=[_local_source_ref()],
+                source_type="adr",
+                observed_at=datetime(2026, 1, 15, tzinfo=timezone.utc),
+                confidence=0.5,
+                status=Status.PROPOSED,
+            )
+        assert "schema_version" in str(exc.value)
 
     def test_unknown_status_rejected(self) -> None:
         with pytest.raises(ValidationError) as exc:
@@ -170,24 +218,56 @@ class TestClaim:
 class TestArtifactManifest:
     def test_happy_path(self) -> None:
         m = ArtifactManifest(
+            schema_version=SCHEMA_VERSION,
             generated_at=datetime(2026, 5, 13, tzinfo=timezone.utc),
-            files={
-                "claims_jsonl": "claims.jsonl",
-                "org_context_md": "ORG_CONTEXT.md",
-                "systems_md": "SYSTEMS.md",
-                "decisions_md": "DECISIONS.md",
-                "owners_md": "OWNERS.md",
-                "glossary_md": "GLOSSARY.md",
-                "context_gaps_md": "CONTEXT_GAPS.md",
-                "ruledout_md": "RULEDOUT.md",
-            },
+            files=_canonical_files(),
         )
-        assert m.files["claims_jsonl"] == "claims.jsonl"
+        assert m.files.claims_jsonl == "claims.jsonl"
+        assert m.files.ruledout_md == "RULEDOUT.md"
         assert m.schema_version == SCHEMA_VERSION
 
-    def test_empty_files_rejected(self) -> None:
-        with pytest.raises(ValidationError):
+    def test_schema_version_required(self) -> None:
+        with pytest.raises(ValidationError) as exc:
             ArtifactManifest(
                 generated_at=datetime(2026, 5, 13, tzinfo=timezone.utc),
-                files={},
+                files=_canonical_files(),
+            )
+        assert "schema_version" in str(exc.value)
+
+    @pytest.mark.parametrize(
+        "missing",
+        [
+            "claims_jsonl",
+            "org_context_md",
+            "systems_md",
+            "decisions_md",
+            "owners_md",
+            "glossary_md",
+            "context_gaps_md",
+            "ruledout_md",
+        ],
+    )
+    def test_missing_canonical_artifact_rejected(self, missing: str) -> None:
+        # Dropping any one of the canonical artifacts must fail validation
+        # so the manifest is a load-bearing checklist, not advisory.
+        files = _canonical_files()
+        files.pop(missing)
+        with pytest.raises(ValidationError) as exc:
+            ArtifactManifest(
+                schema_version=SCHEMA_VERSION,
+                generated_at=datetime(2026, 5, 13, tzinfo=timezone.utc),
+                files=files,
+            )
+        assert missing in str(exc.value)
+
+    def test_unknown_file_key_rejected(self) -> None:
+        # Extra logical artifacts must not silently slip in (extra="forbid"
+        # on ArtifactFiles).
+        files = _canonical_files()
+        files["not_a_real_artifact"] = "x.md"
+        with pytest.raises(ValidationError):
+            ArtifactManifest(
+                schema_version=SCHEMA_VERSION,
+                generated_at=datetime(2026, 5, 13, tzinfo=timezone.utc),
+                files=files,
             )

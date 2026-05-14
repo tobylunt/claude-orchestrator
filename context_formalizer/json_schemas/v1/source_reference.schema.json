@@ -14,6 +14,8 @@
       "type": "string"
     }
   },
+  "$id": "urn:context-formalizer:schemas:v1:source_reference",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "description": "A provider-aware pointer back to the evidence behind a Claim.\n\n``uri`` is the canonical locator within the provider's namespace:\n  - ``local_files``: a normalized relative path (or ``file://`` URI) under\n    the crawl root. No top-level \"path\" field — keep everything in ``uri``\n    so non-file providers don't need a special case.\n  - ``git_history``: a path within the repo; ``revision`` carries the\n    commit sha.\n  - ``github``/``gdrive``/``notion``: provider-native URLs or IDs.\n\nSpan fields are all optional because different providers expose different\naddressing granularity (line spans for code, page for PDFs, block for\nNotion).",
   "properties": {
@@ -89,7 +91,7 @@
       "title": "Revision"
     },
     "schema_version": {
-      "default": "1.0.0",
+      "minLength": 1,
       "title": "Schema Version",
       "type": "string"
     },
@@ -131,6 +133,7 @@
     }
   },
   "required": [
+    "schema_version",
     "source_id",
     "provider",
     "uri",

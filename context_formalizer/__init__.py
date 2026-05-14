@@ -8,8 +8,11 @@ Notion, etc. can use the same Claim and SourceReference records without rewrites
 from context_formalizer.schemas import (
     CLAIM_ID_PREFIX,
     EXPORTED_MODELS,
+    JSON_SCHEMA_DIALECT,
     JSON_SCHEMAS_DIR,
+    SCHEMA_MAJOR,
     SCHEMA_VERSION,
+    ArtifactFiles,
     ArtifactManifest,
     Claim,
     Provider,
@@ -28,8 +31,11 @@ from context_formalizer.schemas import (
 __all__ = [
     "CLAIM_ID_PREFIX",
     "EXPORTED_MODELS",
+    "JSON_SCHEMA_DIALECT",
     "JSON_SCHEMAS_DIR",
+    "SCHEMA_MAJOR",
     "SCHEMA_VERSION",
+    "ArtifactFiles",
     "ArtifactManifest",
     "Claim",
     "Provider",

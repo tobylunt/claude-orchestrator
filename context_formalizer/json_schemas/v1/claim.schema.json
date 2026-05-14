@@ -89,7 +89,7 @@
           "title": "Revision"
         },
         "schema_version": {
-          "default": "1.0.0",
+          "minLength": 1,
           "title": "Schema Version",
           "type": "string"
         },
@@ -131,6 +131,7 @@
         }
       },
       "required": [
+        "schema_version",
         "source_id",
         "provider",
         "uri",
@@ -153,6 +154,8 @@
       "type": "string"
     }
   },
+  "$id": "urn:context-formalizer:schemas:v1:claim",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "description": "A single cited fact about the organization.\n\nHard invariants enforced here:\n  - ``source_references`` is non-empty (no claim without provenance).\n  - ``confidence`` is in ``[0, 1]``.\n  - ``status`` must be one of the declared :class:`Status` values.\n\nOther invariants (e.g. local-file spans resolving to real bytes, ownership\nclaims carrying explicit evidence) are enforced by downstream verifiers\nrather than the schema itself.",
   "properties": {
@@ -187,7 +190,7 @@
       "type": "array"
     },
     "schema_version": {
-      "default": "1.0.0",
+      "minLength": 1,
       "title": "Schema Version",
       "type": "string"
     },
@@ -214,6 +217,7 @@
     }
   },
   "required": [
+    "schema_version",
     "id",
     "text",
     "source_references",
