@@ -6,19 +6,23 @@ Notion, etc. can use the same Claim and SourceReference records without rewrites
 """
 
 from context_formalizer.schemas import (
+    CLAIM_ID_PREFIX,
     SCHEMA_VERSION,
     ArtifactManifest,
     Claim,
     Provider,
     SourceReference,
     Status,
+    stable_claim_id,
 )
 
 __all__ = [
+    "CLAIM_ID_PREFIX",
     "SCHEMA_VERSION",
     "ArtifactManifest",
     "Claim",
     "Provider",
     "SourceReference",
     "Status",
+    "stable_claim_id",
 ]

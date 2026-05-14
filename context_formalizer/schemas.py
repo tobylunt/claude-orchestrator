@@ -14,6 +14,8 @@ be detected and handled deterministically.
 
 from __future__ import annotations
 
+import hashlib
+import unicodedata
 from datetime import datetime
 from enum import Enum
 
@@ -122,3 +124,61 @@ class ArtifactManifest(BaseModel):
     schema_version: str = SCHEMA_VERSION
     generated_at: datetime
     files: dict[str, str] = Field(min_length=1)
+
+
+CLAIM_ID_PREFIX = "clm_"
+"""Prefix on every stable claim id. Makes ids self-describing in logs."""
+
+_CLAIM_ID_HEX_LEN = 32
+"""SHA-256 hex digest is 64 chars; we keep the first 32 (128 bits) for short,
+collision-resistant ids while remaining content-addressed."""
+
+
+def _normalize_claim_text(text: str) -> str:
+    """Whitespace-collapse + NFKC-normalize.
+
+    Trivial reformatting (extra spaces, NBSP, fullwidth chars) must not change
+    the claim id — otherwise re-extraction would generate spurious new claims.
+    """
+    return " ".join(unicodedata.normalize("NFKC", text).split())
+
+
+def _span_key(ref: SourceReference) -> str:
+    """Canonical string form of a SourceReference span, used for hashing."""
+
+    def _s(v: int | str | None) -> str:
+        return "" if v is None else str(v)
+
+    return "|".join(
+        [
+            _s(ref.start_line),
+            _s(ref.end_line),
+            _s(ref.start_char),
+            _s(ref.end_char),
+            _s(ref.page),
+            _s(ref.block),
+        ]
+    )
+
+
+def stable_claim_id(claim_text: str, primary_source: SourceReference) -> str:
+    """Deterministic content-addressed id for a Claim.
+
+    Hash domain: normalized claim text plus the primary source's
+    ``provider`` / ``uri`` / ``revision`` / span. SHA-256 (not the builtin
+    ``hash()``) is used so the id is stable across runs, processes, and
+    Python versions — ``PYTHONHASHSEED`` cannot perturb it.
+
+    The primary source is the source the caller considers canonical for this
+    claim (typically the first entry in ``Claim.source_references``).
+    """
+    parts = [
+        _normalize_claim_text(claim_text),
+        primary_source.provider.value,
+        primary_source.uri,
+        primary_source.revision or "",
+        _span_key(primary_source),
+    ]
+    payload = "\x00".join(parts).encode("utf-8")
+    digest = hashlib.sha256(payload).hexdigest()
+    return f"{CLAIM_ID_PREFIX}{digest[:_CLAIM_ID_HEX_LEN]}"
