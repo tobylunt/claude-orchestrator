@@ -170,15 +170,26 @@ class Coordinator:
             feature = Feature.model_validate_json(
                 (feature_dir / "state.json").read_text()
             )
-            # REJECTED is intentionally absent — a rejected feature is retried
-            # on the next run with the debate log fed back as McLoop context
-            # (M2 proper wires this; for M2a/b the retry just re-enters McLoop).
+            # REJECTED is intentionally absent: a rejected feature is retried
+            # on the next run, with Orchestra's critique persisted as McLoop
+            # context. The current run halts immediately after rejection so
+            # later features do not build on an unaccepted foundation.
             if feature.status in (
                 FeatureStatus.MERGED, FeatureStatus.SKIPPED, FeatureStatus.FAILED
             ):
                 continue
 
             self._run_feature(feature, feature_dir, run_id)
+            updated_feature = Feature.model_validate_json(
+                (feature_dir / "state.json").read_text()
+            )
+            if updated_feature.status == FeatureStatus.REJECTED:
+                self._log_event("run_aborted", {
+                    "reason": "feature_rejected",
+                    "feature_id": updated_feature.id,
+                })
+                self._set_cursor("idle", None, run_id)
+                return
 
         self._set_cursor("idle", None, run_id)
         self._log_event("run_finished", {"run_id": run_id})
@@ -370,6 +381,7 @@ class Coordinator:
                 capture_output=True, text=True,
             )
         else:
+            self._record_orchestra_rejection(feature_dir, verdict)
             feature.status = FeatureStatus.REJECTED
             feature.last_error = verdict.judge_reasoning
             feature.updated_at = datetime.now(UTC)
@@ -379,6 +391,20 @@ class Coordinator:
                 "reason": verdict.judge_reasoning,
             })
             # Worktree LEFT in place on rejection so user can debug.
+
+    def _record_orchestra_rejection(self, feature_dir: Path, verdict: Verdict) -> None:
+        """Persist Orchestra rejection details where the next McLoop prompt reads them."""
+        failed_attempts = feature_dir / "failed_attempts.md"
+        existing = failed_attempts.read_text() if failed_attempts.exists() else ""
+        reasoning = verdict.judge_reasoning.strip() or "No rejection reasoning was provided."
+        separator = "" if not existing else ("\n" if existing.endswith("\n") else "\n\n")
+        entry = (
+            f"{separator}## Orchestra rejection {datetime.now(UTC).isoformat()}\n\n"
+            f"- decision: {verdict.decision}\n"
+            f"- confidence: {verdict.confidence:.2f}\n\n"
+            f"{reasoning}\n"
+        )
+        write_text_atomic(failed_attempts, existing + entry)
 
     def _merge_to_main(self, branch_name: str) -> tuple[bool, str]:
         """Merge `branch_name` into main. Returns (success, error_message)."""
