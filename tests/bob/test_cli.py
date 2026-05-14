@@ -130,6 +130,89 @@ def test_orchestrate_bob_validate_fails_on_malformed_spec(tmp_path: Path):
     assert "traceback" not in out
 
 
+def test_orchestrate_bob_draft_help_smoke():
+    result = subprocess.run(
+        [sys.executable, "-m", "claude_orchestrator.bob.cli", "draft", "--help"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0
+    assert "--inputs" in result.stdout
+    assert "--output" in result.stdout
+
+
+def test_orchestrate_bob_draft_writes_reviewable_spec(tmp_path: Path):
+    spec = tmp_path / "source.md"
+    spec.write_text(
+        "# Demo\n## Motivation\nm\n## Features\n"
+        "### F1: a\n- task_type: library\n- verifier: python_pytest\n"
+        "- success_criteria:\n  - x\n- description: |\n"
+        "    line one\n    line two\n"
+    )
+    output = tmp_path / "draft.md"
+
+    result = subprocess.run(
+        [sys.executable, "-m", "claude_orchestrator.bob.cli", "draft",
+         "--project", str(tmp_path),
+         "--inputs", str(spec),
+         "--output", str(output)],
+        capture_output=True, text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "draft spec written" in result.stdout
+    text = output.read_text()
+    assert "### F1: a" in text
+    assert "- description: |" in text
+    assert "line two" in text
+    assert not (tmp_path / ".bob" / "features").exists()
+
+    validate = subprocess.run(
+        [sys.executable, "-m", "claude_orchestrator.bob.cli", "validate",
+         "--inputs", str(output)],
+        capture_output=True, text=True,
+    )
+    assert validate.returncode == 0, validate.stderr
+
+
+def test_orchestrate_bob_draft_stdout_from_stub_directory(tmp_path: Path):
+    inputs_dir = tmp_path / "inputs"
+    inputs_dir.mkdir()
+    (inputs_dir / "spec.md").write_text(
+        "# Demo\n## Motivation\nm\n## Features\n"
+        "### F1: a\n- task_type: library\n- verifier: python_pytest\n"
+        "- success_criteria:\n  - x\n- description: a\n"
+    )
+    env = {**os.environ, "BOB_USE_STUB_DUPLO": "1"}
+
+    result = subprocess.run(
+        [sys.executable, "-m", "claude_orchestrator.bob.cli", "draft",
+         "--project", str(tmp_path),
+         "--inputs", str(inputs_dir)],
+        capture_output=True, text=True, env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith("# Demo")
+    assert "### F1: a" in result.stdout
+
+
+def test_orchestrate_bob_draft_reports_malformed_spec(tmp_path: Path):
+    spec = tmp_path / "bad.md"
+    spec.write_text("## Motivation\nno title\n## Features\n")
+
+    result = subprocess.run(
+        [sys.executable, "-m", "claude_orchestrator.bob.cli", "draft",
+         "--project", str(tmp_path),
+         "--inputs", str(spec)],
+        capture_output=True, text=True,
+    )
+
+    assert result.returncode != 0
+    out = result.stdout + result.stderr
+    assert "title" in out.lower()
+    assert "traceback" not in out.lower()
+
+
 def test_orchestrate_bob_vroom_help():
     result = subprocess.run(
         [sys.executable, "-m", "claude_orchestrator.bob.cli", "vroom", "--help"],
