@@ -102,6 +102,21 @@ Based on the inputs above, produce a Bob spec as JSON with this schema:
   ]
 }
 
+Spec quality rules:
+- Treat generated specs and artifact contracts as proposals unless an explicit
+  human approval gate is part of the requested workflow.
+- Preserve hard invariants from the inputs. Do not weaken requirements around
+  provenance, secret/PII safety, local-only execution, review gates, or
+  conflict/stale/unknown handling.
+- Check each feature for internal consistency before returning JSON:
+  description, success_criteria, verifier, and stated invariants must not
+  contradict each other.
+- If success criteria require deterministic or byte-identical output, avoid
+  append-only or clock/order-dependent behavior in the description. Prefer
+  stable sorting, content-addressed identifiers, and atomic replace writes.
+- Do not specify automatic mutation of canonical files or org docs unless the
+  feature also defines an explicit approval/promotion gate.
+
 Reply with JSON only, no prose.
 """
 
