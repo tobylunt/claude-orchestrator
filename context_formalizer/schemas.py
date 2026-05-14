@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import hashlib
 import unicodedata
+from collections.abc import Iterable, Iterator
 from datetime import datetime
 from enum import Enum
+from typing import TextIO
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -182,3 +184,43 @@ def stable_claim_id(claim_text: str, primary_source: SourceReference) -> str:
     payload = "\x00".join(parts).encode("utf-8")
     digest = hashlib.sha256(payload).hexdigest()
     return f"{CLAIM_ID_PREFIX}{digest[:_CLAIM_ID_HEX_LEN]}"
+
+
+def dumps_claim(claim: Claim) -> str:
+    """Serialize one Claim to a single JSON Lines record (no trailing newline).
+
+    Field order in the output matches Pydantic's field declaration order on
+    :class:`Claim` (and recursively on :class:`SourceReference`). That order is
+    fixed at class definition time, so two runs produce byte-identical output
+    for the same input — required by F1 criterion "field order is stable".
+    """
+    return claim.model_dump_json()
+
+
+def loads_claim(line: str) -> Claim:
+    """Parse one JSON Lines record back into a Claim. Inverse of :func:`dumps_claim`."""
+    return Claim.model_validate_json(line)
+
+
+def dump_claims(claims: Iterable[Claim], fp: TextIO) -> int:
+    """Write claims as JSONL to ``fp``. Returns the number of records written.
+
+    Each record is one line terminated by ``\\n``. The caller controls record
+    ordering; this helper does not sort. (Stable sort by claim id is the
+    extractor's job — see F3.)
+    """
+    count = 0
+    for claim in claims:
+        fp.write(dumps_claim(claim))
+        fp.write("\n")
+        count += 1
+    return count
+
+
+def load_claims(fp: TextIO) -> Iterator[Claim]:
+    """Yield Claims from a JSONL stream. Blank lines are skipped."""
+    for raw in fp:
+        line = raw.strip()
+        if not line:
+            continue
+        yield loads_claim(line)

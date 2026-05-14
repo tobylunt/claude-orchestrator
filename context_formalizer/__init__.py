@@ -13,6 +13,10 @@ from context_formalizer.schemas import (
     Provider,
     SourceReference,
     Status,
+    dump_claims,
+    dumps_claim,
+    load_claims,
+    loads_claim,
     stable_claim_id,
 )
 
@@ -24,5 +28,9 @@ __all__ = [
     "Provider",
     "SourceReference",
     "Status",
+    "dump_claims",
+    "dumps_claim",
+    "load_claims",
+    "loads_claim",
     "stable_claim_id",
 ]
